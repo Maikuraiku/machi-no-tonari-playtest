@@ -42,6 +42,7 @@ const mix = (from, to, amount) => (Array.isArray(to)
 
 const isText = (value) => typeof value === 'string'
 const isIndex = (value, below) => Number.isInteger(value) && value >= 0 && value < below
+const clipTime = (clip, time) => clip.length > 0 ? (clip.loop ? time % clip.length : Math.min(time, clip.length)) : 0
 
 function wellFormed(program) {
   const { parameters, clips, layers } = program
@@ -121,11 +122,15 @@ export function createAnimator(program, { rest = () => undefined, local = false,
   const names = program.clips.map((clip) => clip.curves.map(([path, property]) => `${path}|${property}`))
   // A clip whose curves never change gives the same values whenever it is sampled.
   const still = program.clips.map((clip) => clip.curves.every(([, , keys]) => keys.length === 1))
+  const parameterCurves = program.clips.some((clip) => clip.curves.some(([, property]) => property.startsWith('param:')))
   // What every layer can animate, so that a state with write defaults can put the rest back.
   const reach = program.layers.map(() => new Set())
   const lengths = new Map()
   const values = new Map()
   const runs = program.layers.map((layer) => ({ state: layer.start, time: 0, frames: 0, weight: layer.weight, kept: new Map(), heading: -1, held: 0, restless: 0, stable: -1 }))
+  const composed = runs.map(() => ({ state: -1, weight: null, frame: null }))
+  let canReuse = false
+  let revision = 0
 
   function set(name, value) {
     const type = types.get(name)
@@ -267,7 +272,7 @@ export function createAnimator(program, { rest = () => undefined, local = false,
     if (!motion || weight <= 0) return
     if (motion.clip !== undefined) {
       const clip = program.clips[motion.clip]
-      const at = clip.length > 0 ? (clip.loop ? time % clip.length : Math.min(time, clip.length)) : 0
+      const at = clipTime(clip, time)
       const keysOf = names[motion.clip]
       for (let index = 0; index < clip.curves.length; index++) {
         const [path, property, keys] = clip.curves[index]
@@ -300,17 +305,50 @@ export function createAnimator(program, { rest = () => undefined, local = false,
     const state = program.layers[index].states[run.state]
     const length = duration(state.motion)
     const time = state.time === null ? run.time : Math.min(1, Math.max(0, parameters.get(state.time) ?? 0)) * length
+    const clip = program.clips[state.motion?.clip]
+    const at = clip && clipTime(clip, time)
+    if (clip && run.sampledState === run.state && run.sampledAt === at) return run.sampledFrame
     const frame = new Map()
     sample(state.motion, time, 1, frame, false)
     if (!state.motion || (state.motion.clip !== undefined && still[state.motion.clip])) run.kept.set(run.state, frame)
+    else if (clip) {
+      // A finished clip or a clip held at a dial position can reuse its last sample.
+      run.sampledState = run.state
+      run.sampledAt = at
+      run.sampledFrame = frame
+    }
     return frame
   }
 
+  function needsComposition() {
+    // Parameter curves affect subsequent layers in this same frame, and partial-weight layers
+    // may blend from the previous frame. Both use the original ordered evaluation every time.
+    if (parameterCurves || runs.some(({ weight }) => weight > 0 && weight < 1)) {
+      canReuse = false
+      return true
+    }
+    let changed = !canReuse
+    canReuse = true
+    for (let index = 0; index < runs.length; index++) {
+      const { state, weight } = runs[index]
+      const frame = weight > 0 ? frameOf(index) : null
+      const previous = composed[index]
+      if (previous.state === state && previous.weight === weight && previous.frame === frame) continue
+      changed = true
+      previous.state = state
+      previous.weight = weight
+      previous.frame = frame
+    }
+    return changed
+  }
+
   function evaluate() {
+    if (!needsComposition()) return
+    revision++
     program.layers.forEach((layer, index) => {
       const run = runs[index]
       if (run.weight <= 0) return
-      const frame = frameOf(index)
+      const frame = canReuse ? composed[index].frame : frameOf(index)
       if (layer.states[run.state].defaults) {
         for (const key of reach[index]) {
           if (!frame.has(key)) values.delete(key)
@@ -409,6 +447,7 @@ export function createAnimator(program, { rest = () => undefined, local = false,
     },
     // Everything currently animated: key -> { path, property, value }.
     values,
+    get revision() { return revision },
     tracking,
     state: (layer) => program.layers[layer]?.states[runs[layer].state].name,
     eyesFree: () => tracking.eyes !== ANIMATION,

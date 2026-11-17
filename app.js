@@ -1,5 +1,5 @@
-import { initScene } from "./scene.js?v=6";
-import { connectPresence } from "./presence.js?v=2";
+import { initScene } from "./scene.js?v=7";
+import { connectPresence } from "./presence.js?v=7";
 import { createVoice } from "./voice.js";
 import { ROOM_COLORS, ROOM_LABELS, STYLE_FLOORS, STYLE_LABELS } from "./world/design.js";
 
@@ -157,14 +157,37 @@ function cancelAvatarUpload() {
 }
 
 const apiBase = new URL(document.querySelector('meta[name="machi-api-origin"]')?.content || './', location.href);
+const realtimeBase = new URL(document.querySelector('meta[name="machi-realtime-origin"]')?.content || apiBase.href);
+let stateBase = apiBase;
+
+async function readStateResponse(url, options) {
+  const alternate = stateBase === apiBase ? realtimeBase : apiBase;
+  const target = (base) => {
+    const next = new URL("./api/state", base);
+    next.search = url.search;
+    return next;
+  };
+  const timeout = AbortSignal.timeout(1800);
+  const signal = options.signal && AbortSignal.any ? AbortSignal.any([options.signal, timeout]) : options.signal ?? timeout;
+  try {
+    const response = await fetch(target(stateBase), { ...options, signal });
+    if (response.status < 500) return response;
+    response.body?.cancel().catch(() => {});
+  } catch (error) {
+    if (options.signal?.aborted) throw error;
+  }
+  const response = await fetch(target(alternate), options);
+  if (response.status < 500) stateBase = alternate;
+  return response;
+}
 
 function responseError(status, data) {
   const message = status === 413 ? "サーバーが送信データを受け付けられませんでした。" : "街との通信に失敗しました。";
   return Object.assign(new Error(data?.error ?? message), data, { status });
 }
 
-async function request(path, { body, method, session = token, after, signal } = {}) {
-  const url = new URL(path, apiBase);
+async function request(path, { body, method, session = token, after, signal, base = apiBase } = {}) {
+  const url = new URL(path, base);
   if (after !== undefined) {
     url.searchParams.set("after", after);
     // Tell the server which town layout is already here, so it only sends changes.
@@ -179,7 +202,10 @@ async function request(path, { body, method, session = token, after, signal } = 
     headers["Content-Type"] = "application/json";
     payload = JSON.stringify(body);
   }
-  const response = await fetch(url, { method: method ?? (payload ? "POST" : "GET"), headers, body: payload, signal });
+  const options = { method: method ?? (payload ? "POST" : "GET"), headers, body: payload, signal };
+  const response = path === "./api/state" && base === apiBase && realtimeBase.href !== apiBase.href
+    ? await readStateResponse(url, options)
+    : await fetch(url, options);
   let data;
   try {
     data = await response.json();
@@ -238,6 +264,14 @@ function queueRefresh() {
   }, 50);
 }
 
+function presenceRoute(base, session) {
+  return {
+    url: new URL("./api/presence", base),
+    read: (after, signal) => request(after === undefined ? "./api/presence" : `./api/presence?after=${after}`, { session, signal, base }),
+    write: (body, signal) => request("./api/presence", { body, session, signal, base }),
+  };
+}
+
 function startPresence() {
   presence?.close();
   clearTimeout(voiceTimer);
@@ -246,10 +280,10 @@ function startPresence() {
   const generation = sessionGeneration;
   const session = token;
   presence = connectPresence({
-    url: new URL("./api/presence", apiBase),
+    ...presenceRoute(realtimeBase, session),
+    fallback: realtimeBase.href === apiBase.href ? undefined : presenceRoute(apiBase, session),
+    allowLegacy: !state?.epoch,
     token: session,
-    read: (after, signal) => request(after === undefined ? "./api/presence" : `./api/presence?after=${after}`, { session, signal }),
-    write: (body, signal) => request("./api/presence", { body, session, signal }),
     legacyWrite: async (move, signal) => {
       const result = await request("./api/action", { body: { type: "move", ...move }, session, after: lastSignal, signal });
       accept(result.state, generation);

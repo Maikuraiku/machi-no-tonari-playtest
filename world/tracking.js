@@ -49,13 +49,22 @@ const desiredRotation = new THREE.Quaternion()
 const bodyRotation = new THREE.Quaternion()
 const limbRotation = new THREE.Quaternion()
 const lean = new THREE.Quaternion()
+const worldPosition = new THREE.Vector3()
+const worldScale = new THREE.Vector3()
+const hipsParentInverse = new THREE.Matrix4()
 
 function aimBone(bone, child, goal) {
   bone.getWorldPosition(origin)
-  child.getWorldPosition(from).sub(origin)
+  if (child.parent === bone) {
+    child.updateWorldMatrix(false, false)
+    from.setFromMatrixPosition(child.matrixWorld)
+  } else child.getWorldPosition(from)
+  from.sub(origin)
   to.copy(goal).sub(origin)
   if (from.lengthSq() < 1e-8 || to.lengthSq() < 1e-8) return
-  bone.parent.getWorldQuaternion(inverse).invert()
+  // Reading the bone just updated its ancestors. Reuse that same parent matrix.
+  bone.parent.matrixWorld.decompose(worldPosition, inverse, worldScale)
+  inverse.invert()
   from.applyQuaternion(inverse).normalize()
   to.applyQuaternion(inverse).normalize()
   bone.quaternion.premultiply(limbRotation.setFromUnitVectors(from, to))
@@ -72,9 +81,17 @@ function solveLimb({ upper, lower, end }, goal, pole) {
     aimBone(upper, lower, goal)
     return
   }
-  upper.getWorldPosition(origin)
-  lower.getWorldPosition(middle)
-  end.getWorldPosition(tip)
+  if (lower.parent === upper && end.parent === lower) {
+    // An end-joint update already walks the full chain back to its root.
+    end.updateWorldMatrix(true, false)
+    origin.setFromMatrixPosition(upper.matrixWorld)
+    middle.setFromMatrixPosition(lower.matrixWorld)
+    tip.setFromMatrixPosition(end.matrixWorld)
+  } else {
+    upper.getWorldPosition(origin)
+    lower.getWorldPosition(middle)
+    end.getWorldPosition(tip)
+  }
   const a = origin.distanceTo(middle)
   const b = middle.distanceTo(tip)
   if (Math.min(a, b) < 0.001) return
@@ -147,12 +164,13 @@ export function createTrackedRig(root, bone) {
       bodyRotation.setFromAxisAngle(yAxis, pose.yaw)
       if (hips && legs.some(({ lower, end }) => lower && end) && pose.crouch > 0.005) {
         for (const { end, planted, rotation } of legs) {
-          end?.getWorldPosition(planted)
-          end?.getWorldQuaternion(rotation)
+          if (!end) continue
+          end.updateWorldMatrix(true, false)
+          end.matrixWorld.decompose(planted, rotation, worldScale)
         }
         const hipPoint = hips.getWorldPosition(goal)
         hipPoint.y -= Math.min(pose.crouch, eyeHeight * 0.38)
-        hips.position.copy(hips.parent.worldToLocal(hipPoint))
+        hips.position.copy(hipPoint.applyMatrix4(hipsParentInverse.copy(hips.parent.matrixWorld).invert()))
         for (const leg of legs) {
           if (!leg.end) continue
           pole.set(leg.sign * 0.16, 0, 1).applyQuaternion(bodyRotation)
@@ -164,7 +182,8 @@ export function createTrackedRig(root, bone) {
       if (head) {
         desiredRotation.copy(pose.head.rotation).multiply(faceForward).multiply(headRest)
         alignBone(head, desiredRotation)
-        head.getWorldPosition(headPoint)
+        head.updateWorldMatrix(false, false)
+        headPoint.setFromMatrixPosition(head.matrixWorld)
         headPoint.y += 0.07
       } else {
         root.getWorldPosition(headPoint)

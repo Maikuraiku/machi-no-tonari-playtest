@@ -3,10 +3,10 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm'
-import { controlStates, createAnimator, createControlInput, validProgram } from './animator.js'
+import { controlStates, createAnimator, createControlInput, validProgram } from './animator.js?v=7'
 import { downloadAvatar } from './avatar-download.js?v=6'
 import { textTexture } from './kit.js'
-import { createTrackedRig, followTracking } from './tracking.js?v=5'
+import { createTrackedRig, followTracking } from './tracking.js?v=7'
 
 const AVATAR_HEIGHT = 1.6
 const VRM_EMOTIONS = ['happy', 'angry', 'sad', 'relaxed', 'surprised']
@@ -576,8 +576,12 @@ function createAnimated(source, associations, local, seed) {
   const taps = new Set(buttons.map((binding) => `${binding.parameter}=${binding.value}`))
   const defaults = new Map(shared.map((name) => [name, animator.get(name)]))
   const shown = new Map()
+  let appliedRevision = -1
 
   function apply() {
+    const revision = animator.revision
+    if (revision !== undefined && appliedRevision === revision) return
+    appliedRevision = revision
     for (const [key, entry] of shown) {
       if (animator.values.has(key)) continue
       write(entry.path, entry.property, undefined)
@@ -600,6 +604,8 @@ function createAnimated(source, associations, local, seed) {
     shared.map((name) => values?.[name] ?? null),
     Object.entries(states ?? {}).sort(([a], [b]) => a - b),
   ])
+  let keyedState
+  let stateKey
 
   return {
     held,
@@ -623,7 +629,14 @@ function createAnimated(source, associations, local, seed) {
       const states = animator.settled()
       return { values, states, key: told(values, states) }
     },
-    key: (state) => told(state?.values, state?.states),
+    key(state) {
+      // A server snapshot replaces the whole state. Keep its serialized key across render frames.
+      if (stateKey === undefined || keyedState !== state) {
+        keyedState = state
+        stateKey = told(state?.values, state?.states)
+      }
+      return stateKey
+    },
     // Takes over what the wearer's screen reported. With `jump` the layers go there directly,
     // those at least that have been still for `quiet` seconds.
     follow(state, jump, quiet = 0) {

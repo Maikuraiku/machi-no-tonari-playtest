@@ -3,7 +3,7 @@
 // VR cameras. Buildings are real: their walls stop a walker, their doors open, and stairs
 // lead to the storeys above.
 import * as THREE from 'three'
-import { createAvatars } from './world/avatars.js?v=6'
+import { createAvatars } from './world/avatars.js?v=7'
 import { SHOP_HOUSES, createBuilding } from './world/buildings.js'
 import { DECOR } from './world/decor.js'
 import { BODY as RADIUS, colliders, floorHeight, frontDoors, storeyShape } from './world/design.js'
