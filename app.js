@@ -274,6 +274,7 @@ async function tick() {
     const generation = sessionGeneration;
     try {
       await refresh();
+      if (generation === sessionGeneration && token && state && !presence) startPresence();
     } catch (error) {
       sessionError(error, generation);
     }
@@ -1294,7 +1295,7 @@ document.addEventListener("submit", (event) => {
       const intent = event.submitter?.value;
       const creating = intent === "new" || (intent === "start" && !code);
       if (!creating && !code) throw new Error("招待コードを入力してください。");
-      if (!creating && state?.code === code) { $("dialog").close(); return; }
+      if (!creating && token && state?.code === code) { $("dialog").close(); return; }
       const name = String(data.get("name")).trim();
       const result = await join(name, creating ? "" : code);
       if (!result) return;
