@@ -99,8 +99,8 @@ function pushOut(solids, x, z) {
 
 export function initScene(container, callbacks = {}) {
   const coarse = window.matchMedia?.('(pointer: coarse)').matches ?? false
-  // A reversed depth buffer keeps surfaces that lie close together apart, near and far.
-  const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance', reversedDepthBuffer: true })
+  // WebXR supplies standard eye projection matrices each frame.
+  const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
   renderer.outputColorSpace = THREE.SRGBColorSpace
   renderer.toneMapping = THREE.ACESFilmicToneMapping
   renderer.toneMappingExposure = 0.58
