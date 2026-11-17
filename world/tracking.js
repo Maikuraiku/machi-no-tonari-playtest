@@ -7,14 +7,16 @@ const xAxis = new THREE.Vector3(1, 0, 0)
 const minusZ = new THREE.Vector3(0, 0, -1)
 const faceForward = new THREE.Quaternion().setFromAxisAngle(yAxis, Math.PI)
 const sides = [['left', 1], ['right', -1]]
+const targetPosition = new THREE.Vector3()
+const targetRotation = new THREE.Quaternion()
 
 function followJoint(joint, values, blend) {
   if (!values) return null
-  const position = new THREE.Vector3().fromArray(values)
-  const rotation = new THREE.Quaternion().fromArray(values, 3).normalize()
-  if (!joint) return { position, rotation }
-  joint.position.lerp(position, blend)
-  joint.rotation.slerp(rotation, blend)
+  targetPosition.fromArray(values)
+  targetRotation.fromArray(values, 3).normalize()
+  if (!joint) return { position: targetPosition.clone(), rotation: targetRotation.clone() }
+  joint.position.lerp(targetPosition, blend)
+  joint.rotation.slerp(targetRotation, blend)
   return joint
 }
 

@@ -6,7 +6,7 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm'
 import { controlStates, createAnimator, createControlInput, validProgram } from './animator.js'
 import { downloadAvatar } from './avatar-download.js'
 import { textTexture } from './kit.js'
-import { createTrackedRig, followTracking } from './tracking.js'
+import { createTrackedRig, followTracking } from './tracking.js?v=5'
 
 const AVATAR_HEIGHT = 1.6
 const VRM_EMOTIONS = ['happy', 'angry', 'sad', 'relaxed', 'surprised']
@@ -362,6 +362,9 @@ const worldPosition = new THREE.Vector3()
 const parentRotation = new THREE.Quaternion()
 const restDirection = new THREE.Vector3()
 const nextTail = new THREE.Vector3()
+const inertia = new THREE.Vector3()
+const springTarget = new THREE.Vector3()
+const springRest = new THREE.Vector3()
 const aim = new THREE.Quaternion()
 const toLocal = new THREE.Matrix4()
 
@@ -401,13 +404,12 @@ function updateSprings(joints, delta) {
   const step = Math.min(delta, 1 / 30)
   for (const joint of joints) {
     const { bone, child } = joint
-    bone.parent.updateWorldMatrix(true, false)
     bone.getWorldPosition(worldPosition)
     bone.parent.getWorldQuaternion(parentRotation)
     restDirection.copy(joint.axis).applyQuaternion(joint.rest).applyQuaternion(parentRotation)
     const length = child.getWorldPosition(nextTail).distanceTo(worldPosition)
     nextTail.copy(joint.tail)
-      .addScaledVector(joint.tail.clone().sub(joint.previous), 1 - joint.drag)
+      .addScaledVector(inertia.subVectors(joint.tail, joint.previous), 1 - joint.drag)
       .addScaledVector(restDirection, joint.stiffness * step)
     nextTail.y -= joint.gravity * step
     nextTail.sub(worldPosition).normalize().multiplyScalar(length).add(worldPosition)
@@ -415,10 +417,10 @@ function updateSprings(joints, delta) {
     joint.tail.copy(nextTail)
     // Turn the bone so its child points at the new tail position.
     toLocal.copy(bone.parent.matrixWorld).invert()
-    const target = nextTail.clone().applyMatrix4(toLocal).sub(bone.position).normalize()
-    const resting = joint.axis.clone().applyQuaternion(joint.rest)
+    const target = springTarget.copy(nextTail).applyMatrix4(toLocal).sub(bone.position).normalize()
+    const resting = springRest.copy(joint.axis).applyQuaternion(joint.rest)
     bone.quaternion.copy(aim.setFromUnitVectors(resting, target)).multiply(joint.rest)
-    bone.updateMatrixWorld(true)
+    // The next joint's world-space reads update its ancestors as needed.
   }
 }
 
@@ -694,9 +696,10 @@ async function importAvatar(url, allowModel, { local = false, seed = 1, signal }
   scene.position.set(vrm?.humanoid ? 0 : -center.x * scale, -bounds.min.y * scale, vrm?.humanoid ? 0 : -center.z * scale)
   scene.traverse((obj) => {
     if (obj.isMesh) {
-      obj.castShadow = true
+      obj.castShadow = false
       obj.receiveShadow = true
-      obj.frustumCulled = false
+      // Cull moving skinned meshes at the avatar level so their bind-pose bounds cannot clip limbs.
+      obj.frustumCulled = !obj.isSkinnedMesh
     }
   })
   const rig = vrm?.humanoid ? null : modelRig(scene)
@@ -709,6 +712,7 @@ async function importAvatar(url, allowModel, { local = false, seed = 1, signal }
   const springs = vrm?.humanoid ? [] : createSprings(scene)
   return {
     scene, vrm, rig, head, gimmick, animated, springs, tracking: createTrackedRig(scene, bone), eyeHeight: headHeight + crown * 0.25,
+    visibilityRadius: Math.max(4, size.length() * scale),
     sizing: { width: headWidth, height: crown + 0.04 },
   }
 }
@@ -940,6 +944,18 @@ export function createAvatars(world, { onAvatarState } = {}) {
   const headPoint = new THREE.Vector3()
   const headRotation = new THREE.Quaternion()
   const actorRotation = new THREE.Quaternion()
+  const avatarBounds = new THREE.Sphere()
+  const toViewer = new THREE.Vector3()
+
+  function updateAnimator(actor, delta, wide, round) {
+    if (!actor.model?.animated) return
+    try {
+      runAnimator(actor, delta, wide, round)
+    } catch (error) {
+      console.error(error)
+      actor.model.animated = null
+    }
+  }
 
   function update(delta, elapsed, camera) {
     for (const actor of actors.values()) {
@@ -969,20 +985,39 @@ export function createAvatars(world, { onAvatarState } = {}) {
       // Other residents climb to the storey they were last seen on; this screen's own is placed by the scene.
       if (!actor.self) actor.height += (actor.target.y - actor.height) * (1 - Math.exp(-24 * delta))
       node.position.y = actor.height + (walking && !actor.tracked ? Math.abs(Math.sin(actor.stride)) * 0.05 : 0)
-      const standard = actor.standard.userData
-      standard.tracking.reset()
-      for (const [index, leg] of standard.legs.entries()) {
-        leg.rotation.x = index ? stride : -stride
-        standard.shoulders[index].rotation.x = index ? -stride * 0.75 : stride * 0.75
-      }
-      if (!actor.model) standard.tracking.apply(actor.tracked, 1.45)
-
       // Lip sync follows how loudly this resident is speaking.
       const loud = levels.get(actor.id) ?? 0
       actor.mouth += (loud - actor.mouth) * (1 - Math.exp(-18 * delta))
       const wide = actor.mouth * (0.65 + 0.35 * Math.sin(elapsed * 17))
       const round = actor.mouth * (0.35 - 0.35 * Math.sin(elapsed * 17))
-      actor.standard.userData.mouth.scale.y = 0.012 + actor.mouth * 0.05
+
+      // Update positions and animator clocks even when the avatar is outside the view.
+      const above = ceiling && actor.height > ceiling.y && node.position.x > ceiling.x0 && node.position.x < ceiling.x1
+        && node.position.z > ceiling.z0 && node.position.z < ceiling.z1
+      const radius = actor.model?.visibilityRadius ?? 4
+      avatarBounds.center.copy(node.position)
+      avatarBounds.radius = radius
+      const offscreen = camera.frustum ? !camera.frustum.intersectsSphere(avatarBounds)
+        : camera.direction && toViewer.subVectors(camera.position, node.position).dot(camera.direction) > radius
+      node.visible = !(actor.self && localHidden) && !above && !offscreen
+      const label = actor.label
+      label.visible = node.visible
+      if (!node.visible) {
+        actor.model?.tracking?.reset()
+        updateAnimator(actor, delta, wide, round)
+        continue
+      }
+
+      if (!actor.model) {
+        const standard = actor.standard.userData
+        standard.tracking.reset()
+        for (const [index, leg] of standard.legs.entries()) {
+          leg.rotation.x = index ? stride : -stride
+          standard.shoulders[index].rotation.x = index ? -stride * 0.75 : stride * 0.75
+        }
+        standard.tracking.apply(actor.tracked, 1.45)
+        standard.mouth.scale.y = 0.012 + actor.mouth * 0.05
+      }
       actor.blink -= delta
       if (actor.blink < -0.14) actor.blink = 2.2 + Math.random() * 3.6
       const closed = actor.blink < 0 ? 1 - Math.abs(actor.blink + 0.07) / 0.07 : 0
@@ -1001,15 +1036,7 @@ export function createAvatars(world, { onAvatarState } = {}) {
           }
           if (!actor.tracked) vrm.update(delta)
         }
-        if (actor.model.animated) {
-          try {
-            runAnimator(actor, delta, wide, round)
-          } catch (error) {
-            // One avatar's broken animator must not stop the town.
-            console.error(error)
-            actor.model.animated = null
-          }
-        }
+        updateAnimator(actor, delta, wide, round)
         const { animated } = actor.model
         const holding = (slot) => animated?.held.get(slot.influences)?.get(slot.index)
         // An expression that takes over the eyes or the mouth keeps them until it lets go.
@@ -1036,19 +1063,11 @@ export function createAvatars(world, { onAvatarState } = {}) {
         }
       }
 
-      // Looking into a storey from above, whoever stands on the storeys above it is left out with them.
-      const above = ceiling && actor.height > ceiling.y && node.position.x > ceiling.x0 && node.position.x < ceiling.x1
-        && node.position.z > ceiling.z0 && node.position.z < ceiling.z1
-      node.visible = !(actor.self && localHidden) && !above
-      const label = actor.label
-      label.visible = node.visible
-      if (label.visible) {
-        const tall = (actor.model ? AVATAR_HEIGHT : 1.62) + 0.34
-        label.position.set(node.position.x, node.position.y + tall, node.position.z)
-        // Name tags keep a readable size at any distance.
-        const size = THREE.MathUtils.clamp(camera.position.distanceTo(label.position) * 0.026, 0.2, 2.6)
-        label.scale.set(size * label.userData.aspect, size, 1)
-      }
+      const tall = (actor.model ? AVATAR_HEIGHT : 1.62) + 0.34
+      label.position.set(node.position.x, node.position.y + tall, node.position.z)
+      // Name tags keep a readable size at any distance.
+      const size = THREE.MathUtils.clamp(camera.position.distanceTo(label.position) * 0.026, 0.2, 2.6)
+      label.scale.set(size * label.userData.aspect, size, 1)
     }
   }
 
@@ -1065,6 +1084,7 @@ export function createAvatars(world, { onAvatarState } = {}) {
       for (const [id, level] of next) levels.set(id, level)
     },
     setPreview(value) {
+      if (preview?.outfit === value?.outfit && preview?.color === value?.color) return
       preview = value
       if (lastSelf) sync(lastSelf, lastOthers)
     },

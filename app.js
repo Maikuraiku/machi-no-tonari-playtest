@@ -1,4 +1,4 @@
-import { initScene } from "./scene.js?v=3";
+import { initScene } from "./scene.js?v=5";
 import { connectPresence } from "./presence.js?v=2";
 import { createVoice } from "./voice.js";
 import { ROOM_COLORS, ROOM_LABELS, STYLE_FLOORS, STYLE_LABELS } from "./world/design.js";

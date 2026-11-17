@@ -3,7 +3,7 @@
 // VR cameras. Buildings are real: their walls stop a walker, their doors open, and stairs
 // lead to the storeys above.
 import * as THREE from 'three'
-import { createAvatars } from './world/avatars.js'
+import { createAvatars } from './world/avatars.js?v=5'
 import { SHOP_HOUSES, createBuilding } from './world/buildings.js'
 import { DECOR } from './world/decor.js'
 import { BODY as RADIUS, colliders, floorHeight, frontDoors, storeyShape } from './world/design.js'
@@ -129,6 +129,7 @@ export function initScene(container, callbacks = {}) {
   let gridKey = ''
 
   let state = {}
+  let pendingPlayers = null
   let quality = 'medium'
   let mode = 'follow'
   let yaw = 0.62
@@ -172,6 +173,11 @@ export function initScene(container, callbacks = {}) {
   const floor = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
   const point = new THREE.Vector3()
   const forward = new THREE.Vector3()
+  const avatarFrustum = new THREE.Frustum()
+  const viewProjection = new THREE.Matrix4()
+  const avatarDirection = new THREE.Vector3()
+  const viewRotation = new THREE.Quaternion()
+  const avatarView = { position: null, frustum: null, direction: null }
 
   const immersive = () => renderer.xr.isPresenting
   const firstPerson = () => mode === 'first' || immersive()
@@ -365,7 +371,7 @@ export function initScene(container, callbacks = {}) {
     avatars.sync({ ...player, world: { x: here.x, y: here.y, z: here.z, place: 'town' } }, residents)
   }
 
-  function updatePresence(players) {
+  function applyPresence(players) {
     if (!local.ready || !state.players?.length || !players.length) return
     const locations = new Map(players.map((player) => [player.id, player]))
     others.length = 0
@@ -394,8 +400,17 @@ export function initScene(container, callbacks = {}) {
   }
 
   function update(next) {
+    const previous = state
     state = next ?? {}
-    drawTown()
+    pendingPlayers = null
+    const houses = state.houses ?? []
+    const oldHouses = previous.houses ?? []
+    if (state.session !== previous.session || state.town !== previous.town || state.design !== previous.design
+      || houses.length !== oldHouses.length || houses.some((house, index) => {
+        const prior = oldHouses[index]
+        return house.id !== prior.id || house.label !== prior.label || house.canEnter !== prior.canEnter
+          || house.rev !== prior.rev || house.design !== prior.design
+      })) drawTown()
     placeLocal()
     syncActors()
     drawMarkers()
@@ -1058,6 +1073,10 @@ export function initScene(container, callbacks = {}) {
     const delta = Math.min(0.08, Math.max(0.001, (time - lastTime) / 1000))
     lastTime = time
     elapsed += delta
+    if (pendingPlayers) {
+      applyPresence(pendingPlayers)
+      pendingPlayers = null
+    }
     const [handX, handY] = immersive() ? readHands() : [0, 0]
     const previousPose = xrPose
     xrPose = immersive() ? readTracking(xrFrame, delta) : null
@@ -1082,7 +1101,17 @@ export function initScene(container, callbacks = {}) {
     camera.updateMatrixWorld(true)
     const view = xrPose ? point.set(xrPose.head[0], xrPose.head[1], xrPose.head[2]).add(here)
       : immersive() ? camera.getWorldPosition(point) : camera.position
-    avatars.update(delta, elapsed, { position: view })
+    avatarView.position = view
+    avatarView.frustum = null
+    avatarView.direction = null
+    if (!immersive()) {
+      viewProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
+      avatarView.frustum = avatarFrustum.setFromProjectionMatrix(viewProjection)
+    } else if (xrPose) {
+      viewRotation.fromArray(xrPose.head, 3).normalize()
+      avatarView.direction = avatarDirection.set(0, 0, -1).applyQuaternion(viewRotation)
+    }
+    avatars.update(delta, elapsed, avatarView)
     for (const entry of entries.values()) {
       const label = entry.label
       if (!label?.visible) continue
@@ -1118,7 +1147,9 @@ export function initScene(container, callbacks = {}) {
 
   return {
     update,
-    updatePresence,
+    updatePresence(players) {
+      pendingPlayers = players
+    },
     setCamera,
     setQuality,
     camera: () => mode,
