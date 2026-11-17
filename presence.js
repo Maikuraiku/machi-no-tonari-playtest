@@ -14,9 +14,8 @@ export function connectPresence({ url, token, read, write, legacyWrite, onFrame,
   let poll;
   let latest;
   let pending;
-  let writing = false;
+  const writes = new Set();
   let writeTimer;
-  let writeRequest;
 
   function scheduleWrite(delay) {
     if (writeTimer) return;
@@ -29,20 +28,21 @@ export function connectPresence({ url, token, read, write, legacyWrite, onFrame,
   async function flush() {
     if (stopped || !pending) return;
     if (ready && socket?.readyState === WebSocket.OPEN) {
-      if (socket.bufferedAmount > 2048) {
-        scheduleWrite(50);
+      if (socket.bufferedAmount > 1024) {
+        scheduleWrite(33);
         return;
       }
       socket.send(JSON.stringify(pending));
       pending = null;
       return;
     }
-    if (writing || (!legacy && !poll)) return;
+    // Modern servers use the source sequence to discard a pose that arrives out of order.
+    // Let the newest pose start while one HTTP request is still waiting for its reply.
+    if (writes.size >= (source && !legacy ? 2 : 1) || (!legacy && !poll)) return;
     const next = pending;
     pending = null;
-    writing = true;
     const request = new AbortController();
-    writeRequest = request;
+    writes.add(request);
     const timeout = setTimeout(() => request.abort(), 3500);
     try {
       if (legacy) await legacyWrite(next, request.signal);
@@ -53,15 +53,14 @@ export function connectPresence({ url, token, read, write, legacyWrite, onFrame,
     } catch (error) {
       if (!stopped && !ready) {
         if (error.status === 401) onUnauthorized();
-        else {
-          pending ??= next;
+        else if (next === latest) {
+          pending = next;
           scheduleWrite(350);
         }
       }
     } finally {
       clearTimeout(timeout);
-      writeRequest = null;
-      writing = false;
+      writes.delete(request);
       if (!writeTimer) flush();
     }
   }
@@ -88,7 +87,7 @@ export function connectPresence({ url, token, read, write, legacyWrite, onFrame,
     } catch (error) {
       if (!controller.signal.aborted && error.status === 404) {
         legacy = true;
-        writeRequest?.abort();
+        for (const request of writes) request.abort();
         clearTimeout(reconnectTimer);
         socket?.close();
         flush();
@@ -131,7 +130,7 @@ export function connectPresence({ url, token, read, write, legacyWrite, onFrame,
         clearTimeout(connectTimer);
         poll?.abort();
         poll = null;
-        writeRequest?.abort();
+        for (const request of writes) request.abort();
         pending = latest;
       }
       onFrame(frame);
@@ -164,7 +163,7 @@ export function connectPresence({ url, token, read, write, legacyWrite, onFrame,
       clearTimeout(pollTimer);
       clearTimeout(writeTimer);
       poll?.abort();
-      writeRequest?.abort();
+      for (const request of writes) request.abort();
       socket?.close();
     },
   };

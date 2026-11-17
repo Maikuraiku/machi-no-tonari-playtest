@@ -130,6 +130,7 @@ export function initScene(container, callbacks = {}) {
 
   let state = {}
   let quality = 'medium'
+  let drawnQuality = null
   let mode = 'follow'
   let yaw = 0.62
   let pitch = 0.5
@@ -151,6 +152,10 @@ export function initScene(container, callbacks = {}) {
   let xrHeading = 0
   let xrBodyYaw = null
   let xrPose = null
+  let xrReference = null
+  let previousHead = null
+  const xrOrigin = new THREE.Vector3()
+  const xrStep = new THREE.Vector3()
   // The building the player stands in (null in the street), and what was last told to the app.
   let home = null
   let placeKey = ''
@@ -522,13 +527,13 @@ export function initScene(container, callbacks = {}) {
     return immersive() ? xrHeading : yaw
   }
 
-  function move(delta, inputX, inputY) {
+  function move(delta, inputX, inputY, physicalX = 0, physicalZ = 0) {
     const actor = avatars.actor(state.player?.id)
     if (!local.ready || !state.player || !state.town) return
     let dx = 0
     let dz = 0
     const strength = Math.min(1, Math.hypot(inputX, inputY))
-    if (strength > 0.08 && mode !== 'close' && !designing()) {
+    if (strength > 0.08 && (mode !== 'close' || immersive()) && !designing()) {
       route.length = 0
       if (local.stair) local.stair.auto = false
       const angle = heading()
@@ -550,12 +555,12 @@ export function initScene(container, callbacks = {}) {
     }
     const before = [here.x, here.z]
     const steered = !route.length && !local.stair?.auto
-    if (dx || dz) {
-      // Short strides, so that nobody slips through a thin wall on a slow frame.
-      const stride = SPEED * delta * (local.stair ? 0.7 : 1)
-      const parts = Math.max(1, Math.ceil(stride / 0.14))
-      for (let part = 0; part < parts; part++) step(dx * stride / parts, dz * stride / parts, steered)
-    } else step(0, 0, steered)
+    const stride = SPEED * delta * (local.stair ? 0.7 : 1)
+    const travelX = dx * stride + physicalX
+    const travelZ = dz * stride + physicalZ
+    // Use short steps for controller movement and physical footsteps so both respect walls and stairs.
+    const parts = Math.max(1, Math.ceil(Math.hypot(travelX, travelZ) / 0.14))
+    for (let part = 0; part < parts; part++) step(travelX / parts, travelZ / parts, steered)
     // The floor underfoot: the street, or the storey of the building one stands in.
     if (!local.stair) {
       const ground = home ? floorHeight(home.building.design, local.level) : 0
@@ -610,11 +615,11 @@ export function initScene(container, callbacks = {}) {
   }
 
   function report(now, force = false) {
-    if (!local.ready || (!force && ((!xrPose && designing()) || now - lastReport < 50))) return
+    if (!local.ready || (!force && ((!xrPose && designing()) || now - lastReport < (xrPose ? 33 : 50)))) return
     const position = { x: Math.round(local.x * 1000) / 1000, z: Math.round(local.z * 1000) / 1000,
       y: Math.round(here.y * 1000) / 1000, warp: local.warp, pose: xrPose }
     const key = JSON.stringify(position)
-    if (key === lastSent && (!xrPose || now - lastReport < 1000)) return
+    if (key === lastSent && (!xrPose || now - lastReport < 250)) return
     lastSent = key
     lastReport = now
     callbacks.onMove?.(position)
@@ -661,7 +666,8 @@ export function initScene(container, callbacks = {}) {
 
   function placeCamera(delta) {
     if (immersive()) {
-      rig.position.copy(here)
+      // The headset has already moved the body through the town, so don't apply its offset a second time.
+      rig.position.copy(here).sub(xrOrigin)
       rig.rotation.y = xrYaw
       focus.copy(here)
       return
@@ -910,13 +916,41 @@ export function initScene(container, callbacks = {}) {
   const trackedPosition = new THREE.Vector3()
   const trackedDirection = new THREE.Vector3()
 
+  function resetPhysicalWalking() {
+    previousHead = null
+    xrStep.set(0, 0, 0)
+  }
+
+  function watchXRReference(reference) {
+    xrReference?.removeEventListener('reset', resetPhysicalWalking)
+    xrReference = reference
+    xrReference?.addEventListener('reset', resetPhysicalWalking)
+    resetPhysicalWalking()
+  }
+
   function readTracking(frame, delta) {
     const reference = renderer.xr.getReferenceSpace()
     const viewer = frame && reference && frame.getViewerPose(reference)
-    if (!viewer) return null
+    if (!viewer) {
+      resetPhysicalWalking()
+      return null
+    }
     xrOrientation.setFromAxisAngle(xrUp, xrYaw)
+    const { position: headPosition } = viewer.transform
+    xrOrigin.set(headPosition.x, 0, headPosition.z).applyQuaternion(xrOrientation)
+    xrStep.set(0, 0, 0)
+    if (viewer.emulatedPosition) previousHead = null
+    else {
+      if (previousHead) {
+        const x = headPosition.x - previousHead.x
+        const z = headPosition.z - previousHead.z
+        // A tracking-origin jump is not a physical step. Snap-turns rotate this delta in place.
+        if (Math.hypot(x, z) < 0.75) xrStep.set(x, 0, z).applyQuaternion(xrOrientation)
+      }
+      previousHead = headPosition
+    }
     const pack = ({ position, orientation }) => {
-      trackedPosition.set(position.x, position.y, position.z).applyQuaternion(xrOrientation)
+      trackedPosition.set(position.x, position.y, position.z).applyQuaternion(xrOrientation).sub(xrOrigin)
       trackedRotation.set(orientation.x, orientation.y, orientation.z, orientation.w).premultiply(xrOrientation)
       return [...trackedPosition, ...trackedRotation].map((value) => Math.round(value * 1000) / 1000)
     }
@@ -988,16 +1022,20 @@ export function initScene(container, callbacks = {}) {
     xrHeading = yaw
     xrBodyYaw = null
     xrTurned = false
+    xrOrigin.set(0, 0, 0)
+    watchXRReference(renderer.xr.getReferenceSpace())
+    applyQuality()
     avatars.setLocalHidden(true)
     callbacks.onVR?.(true)
   })
   renderer.xr.addEventListener('sessionend', () => {
     xrPose = null
+    watchXRReference(null)
     report(performance.now(), true)
     avatars.setLocalHidden(firstPerson())
     snapCamera = true
     camera.fov = 55
-    resize()
+    applyQuality()
     callbacks.onVR?.(false)
   })
 
@@ -1028,8 +1066,8 @@ export function initScene(container, callbacks = {}) {
       pan.x += (Math.cos(yaw) * inputX - Math.sin(yaw) * inputY) * scale
       pan.z += (-Math.sin(yaw) * inputX - Math.cos(yaw) * inputY) * scale
       move(delta, 0, 0)
-    } else move(delta, inputX + handX, inputY + handY)
-    report(time, Boolean(previousPose) !== Boolean(xrPose))
+    } else move(delta, inputX + handX, inputY + handY, xrStep.x, xrStep.z)
+    report(performance.now(), Boolean(previousPose) !== Boolean(xrPose))
     showBuildings(delta)
     placeCamera(delta)
     if (!immersive()) {
@@ -1053,12 +1091,20 @@ export function initScene(container, callbacks = {}) {
     renderer.render(world, camera)
   }
 
+  function applyQuality() {
+    const effective = immersive() ? 'low' : quality
+    if (!immersive()) renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, effective === 'high' ? 2 : effective === 'medium' ? 1.5 : 1.25))
+    if (drawnQuality !== effective) {
+      drawnQuality = effective
+      setDetail(effective === 'high' ? 2 : effective === 'medium' ? 1 : 0)
+      environment.setQuality(effective)
+    }
+    resize()
+  }
+
   function setQuality(next) {
     quality = ['low', 'medium', 'high'].includes(next) ? next : 'medium'
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, quality === 'high' ? 2 : quality === 'medium' ? 1.5 : 1.25))
-    setDetail(quality === 'high' ? 2 : quality === 'medium' ? 1 : 0)
-    environment.setQuality(quality)
-    resize()
+    applyQuality()
   }
 
   setQuality(coarse ? 'low' : 'high')
@@ -1126,12 +1172,14 @@ export function initScene(container, callbacks = {}) {
       async enter() {
         const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'] })
         renderer.xr.setReferenceSpaceType('local-floor')
+        renderer.xr.setFramebufferScaleFactor(0.85)
         await renderer.xr.setSession(session)
       },
       exit: () => renderer.xr.getSession()?.end(),
     },
     destroy() {
       renderer.setAnimationLoop(null)
+      watchXRReference(null)
       observer.disconnect()
       document.removeEventListener('pointerlockchange', onLockChange)
       document.removeEventListener('mousemove', onMouseLook)
