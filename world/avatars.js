@@ -4,7 +4,7 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm'
 import { controlStates, createAnimator, createControlInput, validProgram } from './animator.js'
-import { downloadAvatar } from './avatar-download.js'
+import { downloadAvatar } from './avatar-download.js?v=6'
 import { textTexture } from './kit.js'
 import { createTrackedRig, followTracking } from './tracking.js?v=5'
 
@@ -359,6 +359,8 @@ function updateGimmick(gimmick, afk, values) {
 // ---- Swaying bones (hair, skirts, tails) -----------------------------------
 
 const worldPosition = new THREE.Vector3()
+const parentPosition = new THREE.Vector3()
+const parentScale = new THREE.Vector3()
 const parentRotation = new THREE.Quaternion()
 const restDirection = new THREE.Vector3()
 const nextTail = new THREE.Vector3()
@@ -405,9 +407,10 @@ function updateSprings(joints, delta) {
   for (const joint of joints) {
     const { bone, child } = joint
     bone.getWorldPosition(worldPosition)
-    bone.parent.getWorldQuaternion(parentRotation)
+    bone.parent.matrixWorld.decompose(parentPosition, parentRotation, parentScale)
     restDirection.copy(joint.axis).applyQuaternion(joint.rest).applyQuaternion(parentRotation)
-    const length = child.getWorldPosition(nextTail).distanceTo(worldPosition)
+    child.updateWorldMatrix(false, false)
+    const length = nextTail.setFromMatrixPosition(child.matrixWorld).distanceTo(worldPosition)
     nextTail.copy(joint.tail)
       .addScaledVector(inertia.subVectors(joint.tail, joint.previous), 1 - joint.drag)
       .addScaledVector(restDirection, joint.stiffness * step)
@@ -635,16 +638,40 @@ function createAnimated(source, associations, local, seed) {
   }
 }
 
-function visibleModelBounds(scene) {
+const yieldPreparation = () => new Promise((resolve) => setTimeout(resolve, 0))
+let previousPreparation = Promise.resolve()
+
+async function modelBounds(scene, visibleOnly, signal) {
   const bounds = new THREE.Box3()
   const transformed = new THREE.Box3()
-  scene.updateMatrixWorld(true)
-  scene.traverseVisible((node) => {
-    if (!node.isMesh) return
+  const nodes = []
+  if (visibleOnly) {
+    scene.updateMatrixWorld(true)
+    scene.traverseVisible((node) => { if (node.isMesh) nodes.push(node) })
+  } else {
+    scene.updateWorldMatrix(true, true)
+    scene.traverse((node) => { if (node.geometry) nodes.push(node) })
+  }
+  let deadline = performance.now() + 4
+  const vertex = new THREE.Vector3()
+  for (const node of nodes) {
     const target = node.boundingBox !== undefined ? node : node.geometry
-    if (!target.boundingBox) target.computeBoundingBox()
+    if (!target.boundingBox && node.isSkinnedMesh) {
+      // Match Three's exact posed bounds while letting the town draw during large vertex scans.
+      const posed = new THREE.Box3()
+      const vertices = node.geometry.getAttribute('position').count
+      for (let i = 0; i < vertices; i++) {
+        posed.expandByPoint(node.getVertexPosition(i, vertex))
+        if ((i & 255) === 255 && performance.now() >= deadline) {
+          await yieldPreparation()
+          signal?.throwIfAborted()
+          deadline = performance.now() + 4
+        }
+      }
+      target.boundingBox = posed
+    } else if (!target.boundingBox) target.computeBoundingBox()
     bounds.union(transformed.copy(target.boundingBox).applyMatrix4(node.matrixWorld))
-  })
+  }
   return bounds
 }
 
@@ -652,22 +679,46 @@ function visibleModelBounds(scene) {
 const seedOf = (text = '') => [...String(text)].reduce((hash, letter) => (Math.imul(hash, 31) + letter.codePointAt(0)) >>> 0, 7)
 
 // `local` is true for the model of the person at this screen.
-async function importAvatar(url, allowModel, { local = false, seed = 1, signal } = {}) {
-  const loader = new GLTFLoader()
-  loader.register((parser) => new VRMLoaderPlugin(parser))
-  let gltf
+async function importAvatar(url, allowModel, { local = false, seed = 1, signal, onDownload, onPrepare } = {}) {
+  let bytes
   try {
-    if (signal) {
-      const bytes = await downloadAvatar(url, signal)
-      signal.throwIfAborted()
-      gltf = await loader.parseAsync(bytes, new URL('.', new URL(url, document.baseURI)).href)
-    } else gltf = await loader.loadAsync(url)
+    if (signal && !url.startsWith('blob:')) bytes = await downloadAvatar(url, signal, onDownload)
   } catch (error) {
+    signal?.throwIfAborted()
     throw new Error('アバターの3Dモデルを読み込めませんでした。', { cause: error })
   }
+  // A room can download several models together, but their main-thread preparation runs in order.
+  const preparation = previousPreparation.then(async () => {
+    await yieldPreparation()
+    signal?.throwIfAborted()
+    onPrepare?.()
+    const loader = new GLTFLoader()
+    loader.register((parser) => new VRMLoaderPlugin(parser))
+    let gltf
+    try {
+      gltf = bytes ? await loader.parseAsync(bytes, new URL('.', new URL(url, document.baseURI)).href) : await loader.loadAsync(url)
+    } catch (error) {
+      signal?.throwIfAborted()
+      throw new Error('アバターの3Dモデルを読み込めませんでした。', { cause: error })
+    }
+    try {
+      signal?.throwIfAborted()
+      const record = await prepareAvatar(gltf, allowModel, { local, seed, signal })
+      signal?.throwIfAborted()
+      return record
+    } catch (error) {
+      const loaded = gltf.userData.vrm?.scene ?? gltf.scene
+      if (loaded) VRMUtils.deepDispose(loaded)
+      throw error
+    }
+  })
+  previousPreparation = preparation.then(() => {}, () => {})
+  return preparation
+}
+
+async function prepareAvatar(gltf, allowModel, { local, seed, signal }) {
   const vrm = gltf.userData.vrm
   if (!vrm?.humanoid && !allowModel) {
-    VRMUtils.deepDispose(gltf.scene)
     throw new Error('VRM 0.x または VRM 1.0 のアバターを選んでください。')
   }
   if (vrm?.humanoid) VRMUtils.rotateVRM0(vrm)
@@ -683,11 +734,10 @@ async function importAvatar(url, allowModel, { local = false, seed = 1, signal }
     // An avatar whose animator cannot run is still an avatar.
     console.error(error)
   }
-  const bounds = gimmick.parts.length || animated ? visibleModelBounds(scene) : new THREE.Box3().setFromObject(scene)
-  if (bounds.isEmpty() && (gimmick.defaults.size || animated)) bounds.setFromObject(scene)
+  const bounds = await modelBounds(scene, Boolean(gimmick.parts.length || animated), signal)
+  if (bounds.isEmpty() && (gimmick.defaults.size || animated)) bounds.copy(await modelBounds(scene, false, signal))
   const size = bounds.getSize(new THREE.Vector3())
   if (![size.x, size.y, size.z].every(Number.isFinite) || size.y < 0.000001) {
-    VRMUtils.deepDispose(scene)
     throw new Error('アバターの大きさを読み取れませんでした。')
   }
   const scale = vrm?.humanoid ? AVATAR_HEIGHT / size.y : Math.min(AVATAR_HEIGHT / size.y, 2.2 / Math.max(size.x, size.z))
@@ -730,7 +780,7 @@ function makeLabel(text, theme) {
 
 // `onAvatarState` hears what the animator of this screen's own avatar has come to, so that the
 // town can pass it on to everyone else.
-export function createAvatars(world, { onAvatarState } = {}) {
+export function createAvatars(world, { onAvatarState, onAvatarLoad } = {}) {
   const characters = new THREE.Group()
   world.add(characters)
   const actors = new Map()
@@ -778,11 +828,22 @@ export function createAvatars(world, { onAvatarState } = {}) {
     }
   }
 
+  function reportLoad(actor, stage, { received = 0, total = null } = {}) {
+    onAvatarLoad?.({ id: actor.id, name: actor.name, stage, received, total })
+  }
+
+  function abortModelRequest(actor) {
+    if (!actor.modelRequest) return
+    const request = actor.modelRequest
+    actor.modelRequest = null
+    request.abort()
+    reportLoad(actor, 'done')
+  }
+
   function syncModel(actor, url) {
     if (actor.requestURL === url) return
     actor.requestURL = url
-    actor.modelRequest?.abort()
-    actor.modelRequest = null
+    abortModelRequest(actor)
     if (url === actor.activeURL) return
     removeModel(actor)
     actor.activeURL = null
@@ -794,7 +855,19 @@ export function createAvatars(world, { onAvatarState } = {}) {
     }
     const request = new AbortController()
     actor.modelRequest = request
-    importAvatar(url, true, { local: actor.self, seed: seedOf(actor.id), signal: request.signal }).then((record) => {
+    let bytesReceived
+    reportLoad(actor, 'queued')
+    importAvatar(url, true, {
+      local: actor.self, seed: seedOf(actor.id), signal: request.signal,
+      onDownload(progress) {
+        if (actor.modelRequest !== request) return
+        bytesReceived = progress
+        reportLoad(actor, 'download', progress)
+      },
+      onPrepare() {
+        if (actor.modelRequest === request) reportLoad(actor, 'prepare', bytesReceived)
+      },
+    }).then((record) => {
       if (request.signal.aborted) {
         VRMUtils.deepDispose(record.scene)
         return
@@ -804,7 +877,10 @@ export function createAvatars(world, { onAvatarState } = {}) {
     }).catch(() => {
       // The standard avatar remains visible when a model cannot be used.
     }).finally(() => {
-      if (actor.modelRequest === request) actor.modelRequest = null
+      if (actor.modelRequest === request) {
+        actor.modelRequest = null
+        reportLoad(actor, 'done', bytesReceived)
+      }
     })
   }
 
@@ -844,7 +920,7 @@ export function createAvatars(world, { onAvatarState } = {}) {
     if (self) people.set(self.id, self)
     for (const [id, actor] of actors) {
       if (people.has(id)) continue
-      actor.modelRequest?.abort()
+      abortModelRequest(actor)
       removeModel(actor)
       clearLayer(actor.standard.userData.accessory)
       characters.remove(actor.label)
@@ -873,8 +949,8 @@ export function createAvatars(world, { onAvatarState } = {}) {
       actor.avatarState = item.avatarState
       actor.revision = item.vrm
       actor.serverURL = item.vrmUrl || null
-      const name = item.name || (isSelf ? 'あなた' : '住人')
-      setLabel(actor, actor.afk ? `${name}（離席中）` : name)
+      actor.name = item.name || (isSelf ? 'あなた' : '住人')
+      setLabel(actor, actor.afk ? `${actor.name}（離席中）` : actor.name)
       updatePresence(item, item.world)
       if (isSelf && localVRM && item.vrmUrl && item.vrmUrl !== localVRM.previousServerURL
         && actor.activeURL === localVRM.url && actor.model) {
@@ -1104,11 +1180,12 @@ export function createAvatars(world, { onAvatarState } = {}) {
       const actor = actors.get(id)
       return actor?.model?.eyeHeight ?? 1.45
     },
-    async loadLocal(url, { allowModel = false, serverURL } = {}) {
+    async loadLocal(url, { allowModel = false, serverURL, signal } = {}) {
       const request = ++localRequest
-      const record = await importAvatar(url, allowModel, { local: true, seed: seedOf(lastSelf?.id) })
-      if (request !== localRequest) {
+      const record = await importAvatar(url, allowModel, { local: true, seed: seedOf(lastSelf?.id), signal })
+      if (request !== localRequest || signal?.aborted) {
         VRMUtils.deepDispose(record.scene)
+        signal?.throwIfAborted()
         throw new Error('新しいアバターが選ばれました。')
       }
       if (localVRM?.record) VRMUtils.deepDispose(localVRM.record.scene)
@@ -1125,7 +1202,7 @@ export function createAvatars(world, { onAvatarState } = {}) {
     },
     dispose() {
       for (const actor of actors.values()) {
-        actor.modelRequest?.abort()
+        abortModelRequest(actor)
         removeModel(actor)
       }
       if (localVRM?.record) VRMUtils.deepDispose(localVRM.record.scene)

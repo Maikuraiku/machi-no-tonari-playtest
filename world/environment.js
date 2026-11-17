@@ -42,16 +42,19 @@ export function createEnvironment(scene, renderer) {
   const sea = new THREE.Group()
   scene.add(sea)
   const seaGeometry = new THREE.PlaneGeometry(9000, 9000)
+  const plainSea = new THREE.Mesh(seaGeometry, new THREE.MeshStandardMaterial({
+    color: '#2c5870', roughness: 0.16, metalness: 0.75, envMapIntensity: 1.2,
+  }))
+  plainSea.rotation.x = -Math.PI / 2
+  plainSea.position.y = SEA_LEVEL
+  sea.add(plainSea)
   let water = null
   let ripples = null
+  let reflections = false
 
   function setSea(reflective) {
-    for (const child of [...sea.children]) {
-      sea.remove(child)
-      child.material.dispose()
-    }
-    water = null
-    if (reflective) {
+    reflections = reflective
+    if (reflective && !water) {
       ripples ??= waterNormals()
       water = new Water(seaGeometry, {
         textureWidth: 512, textureHeight: 512, waterNormals: ripples,
@@ -62,14 +65,9 @@ export function createEnvironment(scene, renderer) {
       water.rotation.x = -Math.PI / 2
       water.position.y = SEA_LEVEL
       sea.add(water)
-    } else {
-      const plain = new THREE.Mesh(seaGeometry, new THREE.MeshStandardMaterial({
-        color: '#2c5870', roughness: 0.16, metalness: 0.75, envMapIntensity: 1.2,
-      }))
-      plain.rotation.x = -Math.PI / 2
-      plain.position.y = SEA_LEVEL
-      sea.add(plain)
     }
+    plainSea.visible = !reflections
+    if (water) water.visible = reflections
   }
 
   // A hazy mountain range all the way round the horizon.
@@ -344,14 +342,20 @@ export function createEnvironment(scene, renderer) {
   }
 
   // Keeps the shadow box centred on what the player is looking at.
-  function update(delta, focus) {
+  function update(delta, focus, immersive = false) {
     const texel = (sun.userData.reach ?? 60) * 2 / sun.shadow.mapSize.x
     sun.target.position.set(Math.round(focus.x / texel) * texel, 0, Math.round(focus.z / texel) * texel)
     sun.position.copy(sun.target.position).addScaledVector(sunDirection, 200)
     sky.position.set(focus.x, 0, focus.z)
     range.position.set(focus.x * 0.9, 0, focus.z * 0.9)
     sea.position.set(Math.round(focus.x / 40) * 40, 0, Math.round(focus.z / 40) * 40)
-    if (water) water.material.uniforms.time.value += delta * 0.6
+    // Water renders the scene again for its reflection. Keep that pass out of immersive frames.
+    const showReflection = reflections && !immersive
+    plainSea.visible = !showReflection
+    if (water) {
+      water.visible = showReflection
+      if (showReflection) water.material.uniforms.time.value += delta * 0.6
+    }
   }
 
   return {
@@ -363,6 +367,10 @@ export function createEnvironment(scene, renderer) {
     dispose() {
       disposeGroup(ground)
       disposeGroup(trees)
+      seaGeometry.dispose()
+      plainSea.material.dispose()
+      water?.material.dispose()
+      ripples?.dispose()
       environment.dispose()
       pmrem.dispose()
     },

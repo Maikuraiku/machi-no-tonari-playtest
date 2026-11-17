@@ -8,7 +8,7 @@
   <meta name="theme-color" content="#f8fbf9">
   <meta name="description" content="服屋に寄って、家を建てて、友達と街を育てるブラウザゲーム。">
   <title>まちのとなり</title>
-  <link rel="stylesheet" href="./style.css">
+  <link rel="stylesheet" href="./style.css?v=6">
   <script type="importmap">
     {
       "imports": {
@@ -105,6 +105,7 @@
   </nav>
 
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <section id="avatar-loads" class="avatar-loads" aria-label="アバターの読み込み状況" hidden></section>
 
   <dialog id="dialog" class="game-dialog">
     <button class="icon-button dialog-close" type="button" data-action="close-dialog" aria-label="閉じる"><svg class="icon"><use href="#i-x"/></svg></button>
@@ -112,6 +113,6 @@
   </dialog>
 
   <!-- If the 3D libraries cannot be fetched, say so instead of leaving an empty screen. -->
-  <script type="module" src="./app.js?v=5" onerror="const toast = document.getElementById('toast'); toast.hidden = false; toast.textContent = '3D表示の部品を読み込めませんでした。通信環境を確認して、ページを読み込み直してください。'"></script>
+  <script type="module" src="./app.js?v=6" onerror="const toast = document.getElementById('toast'); toast.hidden = false; toast.textContent = '3D表示の部品を読み込めませんでした。通信環境を確認して、ページを読み込み直してください。'"></script>
 </body>
 </html>

@@ -3,11 +3,11 @@
 // VR cameras. Buildings are real: their walls stop a walker, their doors open, and stairs
 // lead to the storeys above.
 import * as THREE from 'three'
-import { createAvatars } from './world/avatars.js?v=5'
+import { createAvatars } from './world/avatars.js?v=6'
 import { SHOP_HOUSES, createBuilding } from './world/buildings.js'
 import { DECOR } from './world/decor.js'
 import { BODY as RADIUS, colliders, floorHeight, frontDoors, storeyShape } from './world/design.js'
-import { createEnvironment } from './world/environment.js'
+import { createEnvironment } from './world/environment.js?v=6'
 import { TILE, disposeGroup, setAnisotropy, setDetail, textTexture } from './world/kit.js'
 
 const SPEED = 4.6
@@ -121,7 +121,48 @@ export function initScene(container, callbacks = {}) {
   const town = new THREE.Group()
   const markers = new THREE.Group()
   world.add(town, markers)
-  const avatars = createAvatars(world, { onAvatarState: (report) => callbacks.onAvatarState?.(report) })
+  const avatars = createAvatars(world, { onAvatarState: callbacks.onAvatarState, onAvatarLoad: callbacks.onAvatarLoad })
+  let avatarLoadProgress
+  let loadHud
+  const hudOffset = new THREE.Vector3()
+
+  function updateAvatarLoadHud(view) {
+    if (!immersive() || !xrPose || avatarLoadProgress === undefined) {
+      if (loadHud) loadHud.group.visible = false
+      return
+    }
+    if (!loadHud) {
+      const group = new THREE.Group()
+      const geometry = new THREE.PlaneGeometry(1, 1)
+      const plane = (color, order) => {
+        const material = new THREE.MeshBasicMaterial({ color, depthTest: false, depthWrite: false, toneMapped: false })
+        const mesh = new THREE.Mesh(geometry, material)
+        mesh.renderOrder = order
+        group.add(mesh)
+        return mesh
+      }
+      plane('#294450', 1000).scale.set(0.27, 0.013, 1)
+      const fill = plane('#a8dcc7', 1001)
+      const label = makeSign('アバターを読み込み中')
+      label.material.depthTest = false
+      label.renderOrder = 1002
+      label.position.y = 0.027
+      label.scale.set(label.userData.aspect * 0.035, 0.035, 1)
+      group.add(label)
+      world.add(group)
+      loadHud = { group, fill }
+    }
+    const { group, fill } = loadHud
+    const indeterminate = avatarLoadProgress === null
+    const width = indeterminate ? 0.28 : avatarLoadProgress
+    const travel = indeterminate ? (0.5 + 0.5 * Math.sin(elapsed * 5)) * (1 - width) : 0
+    group.visible = true
+    group.quaternion.copy(viewRotation)
+    group.position.copy(view).add(hudOffset.set(0, -0.22, -1.1).applyQuaternion(viewRotation))
+    fill.visible = width > 0
+    fill.scale.set(0.27 * width, 0.009, 1)
+    fill.position.set(0.27 * (-0.5 + width / 2 + travel), 0, 0.001)
+  }
   const hover = flatMarker('#fff6c2', 0.5)
   const selected = flatMarker('#ffe98a', 0.66)
   markers.add(hover, selected)
@@ -1097,7 +1138,7 @@ export function initScene(container, callbacks = {}) {
         camera.updateProjectionMatrix()
       }
     }
-    environment.update(delta, focus)
+    environment.update(delta, focus, immersive())
     camera.updateMatrixWorld(true)
     const view = xrPose ? point.set(xrPose.head[0], xrPose.head[1], xrPose.head[2]).add(here)
       : immersive() ? camera.getWorldPosition(point) : camera.position
@@ -1112,6 +1153,7 @@ export function initScene(container, callbacks = {}) {
       avatarView.direction = avatarDirection.set(0, 0, -1).applyQuaternion(viewRotation)
     }
     avatars.update(delta, elapsed, avatarView)
+    updateAvatarLoadHud(view)
     for (const entry of entries.values()) {
       const label = entry.label
       if (!label?.visible) continue
@@ -1130,7 +1172,7 @@ export function initScene(container, callbacks = {}) {
     resize()
   }
 
-  setQuality(coarse ? 'low' : 'high')
+  setQuality(coarse ? 'low' : 'medium')
   resize()
   renderer.setAnimationLoop(frame)
 
@@ -1191,6 +1233,7 @@ export function initScene(container, callbacks = {}) {
     changeLevel,
     loadVRM: (url, options = {}) => avatars.loadLocal(url, { ...options, serverURL: state.player?.vrmUrl }),
     clearVRM: () => avatars.clearLocal(),
+    setAvatarLoadProgress: (value) => { avatarLoadProgress = value },
     vr: {
       supported: async () => Boolean(await navigator.xr?.isSessionSupported?.('immersive-vr').catch(() => false)),
       active: immersive,
@@ -1217,6 +1260,14 @@ export function initScene(container, callbacks = {}) {
       document.removeEventListener('keyup', onKeyUp)
       window.removeEventListener('blur', onBlur)
       avatars.dispose()
+      if (loadHud) {
+        loadHud.fill.geometry.dispose()
+        for (const child of loadHud.group.children) {
+          child.material.map?.dispose()
+          child.material.dispose()
+        }
+        world.remove(loadHud.group)
+      }
       for (const entry of entries.values()) entry.building.dispose()
       disposeGroup(markers)
       environment.dispose()

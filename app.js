@@ -1,4 +1,4 @@
-import { initScene } from "./scene.js?v=5";
+import { initScene } from "./scene.js?v=6";
 import { connectPresence } from "./presence.js?v=2";
 import { createVoice } from "./voice.js";
 import { ROOM_COLORS, ROOM_LABELS, STYLE_FLOORS, STYLE_LABELS } from "./world/design.js";
@@ -55,7 +55,11 @@ let viewMode = "follow";
 let vrReady = false;
 let renderKey = "";
 let vrmUploading = false;
+let avatarUpload = null;
 const vrmPartSize = 32 * 1024 * 1024;
+const avatarLoads = new Map();
+const avatarLoadRows = new Map();
+let avatarLoadTimer;
 
 const current = () => state?.me ?? initialMe;
 const town = () => state?.town ?? initialTown;
@@ -89,7 +93,75 @@ function notify(message) {
   }, 3500);
 }
 
+function drawAvatarLoads() {
+  avatarLoadTimer = null;
+  const panel = $("avatar-loads");
+  if (!panel) return;
+  for (const [id, { row }] of avatarLoadRows) {
+    if (avatarLoads.has(id)) continue;
+    row.remove();
+    avatarLoadRows.delete(id);
+  }
+  let received = 0;
+  let total = 0;
+  let indeterminate = false;
+  for (const [id, load] of avatarLoads) {
+    if (!avatarLoadRows.has(id)) {
+      const row = document.createElement("div");
+      const label = document.createElement("span");
+      const progress = document.createElement("progress");
+      row.append(label, progress);
+      panel.append(row);
+      avatarLoadRows.set(id, { row, label, progress });
+    }
+    const { label, progress } = avatarLoadRows.get(id);
+    const hasTotal = Number.isFinite(load.total) && load.total > 0;
+    const amount = hasTotal ? Math.min(load.received ?? 0, load.total) : 0;
+    const caption = `${load.name} · ${load.message}`;
+    label.textContent = hasTotal ? `${caption} ${Math.floor(amount / load.total * 100)}%` : caption;
+    progress.setAttribute("aria-label", caption);
+    if (hasTotal) {
+      progress.max = load.total;
+      progress.value = amount;
+      received += amount;
+      total += load.total;
+    } else {
+      progress.removeAttribute("value");
+      indeterminate = true;
+    }
+  }
+  panel.hidden = avatarLoads.size === 0;
+  const ratio = !avatarLoads.size ? undefined : indeterminate ? null : received / total;
+  scene?.setAvatarLoadProgress?.(ratio);
+}
+
+function setAvatarLoad(id, load) {
+  if (load) avatarLoads.set(id, load);
+  else avatarLoads.delete(id);
+  if (!avatarLoadTimer) avatarLoadTimer = setTimeout(drawAvatarLoads, 100);
+}
+
+function reportAvatarLoad({ id, name, stage, received, total }) {
+  const messages = { queued: "受信待ち", download: "受信中", prepare: "表示を準備中" };
+  if (stage === "done") setAvatarLoad(id, null);
+  else if (messages[stage]) setAvatarLoad(id, {
+    name, message: messages[stage], ...(stage === "download" ? { received, total } : {}),
+  });
+}
+
+function cancelAvatarUpload() {
+  if (!avatarUpload) return;
+  avatarUpload.abort();
+  scene?.clearVRM();
+  setAvatarLoad("upload", null);
+}
+
 const apiBase = new URL(document.querySelector('meta[name="machi-api-origin"]')?.content || './', location.href);
+
+function responseError(status, data) {
+  const message = status === 413 ? "サーバーが送信データを受け付けられませんでした。" : "街との通信に失敗しました。";
+  return Object.assign(new Error(data?.error ?? message), data, { status });
+}
 
 async function request(path, { body, method, session = token, after, signal } = {}) {
   const url = new URL(path, apiBase);
@@ -115,10 +187,7 @@ async function request(path, { body, method, session = token, after, signal } = 
     if (response.ok) throw error;
     data = {};
   }
-  if (!response.ok) {
-    const message = response.status === 413 ? "サーバーが送信データを受け付けられませんでした。" : "街との通信に失敗しました。";
-    throw Object.assign(new Error(data.error ?? message), data, { status: response.status });
-  }
+  if (!response.ok) throw responseError(response.status, data);
   return data;
 }
 
@@ -249,6 +318,7 @@ async function join(name, code) {
       body: { name, ...(code ? { code } : {}) }, session: "",
     });
     sessionGeneration++;
+    cancelAvatarUpload();
     voice.reset();
     state = null;
     lastSignal = 0;
@@ -285,6 +355,7 @@ async function tick() {
 function sessionError(error, generation) {
   if (!token || generation !== sessionGeneration || error.status !== 401) return;
   sessionGeneration++;
+  cancelAvatarUpload();
   token = "";
   presence?.close();
   presence = motionFrame = null;
@@ -308,6 +379,7 @@ function makeScene() {
       onPlace: enterPlace,
       onVR: () => update(),
       onAvatarState: reportAvatar,
+      onAvatarLoad: reportAvatarLoad,
     });
     const saved = localStorage.getItem(qualityKey);
     if (saved) scene.setQuality(saved);
@@ -901,19 +973,44 @@ async function changeMic() {
   }
 }
 
-async function uploadAvatar(file, format, { id, session }) {
+function sendAvatarPart(path, body, { session, signal }, onProgress) {
+  return new Promise((resolve, reject) => {
+    signal.throwIfAborted();
+    const xhr = new XMLHttpRequest();
+    const abort = () => xhr.abort();
+    xhr.upload.addEventListener("progress", (event) => onProgress(Math.min(body.size, event.loaded)));
+    xhr.upload.addEventListener("load", () => onProgress(body.size));
+    xhr.open("PUT", new URL(path, apiBase));
+    xhr.responseType = "json";
+    xhr.setRequestHeader("Authorization", `Bearer ${session}`);
+    xhr.setRequestHeader("Content-Type", "model/gltf-binary");
+    xhr.addEventListener("load", () => {
+      if (xhr.status < 200 || xhr.status >= 300) reject(responseError(xhr.status, xhr.response));
+      else if (!xhr.response) reject(new Error("アップロード結果を確認できませんでした。"));
+      else resolve(xhr.response);
+    });
+    xhr.addEventListener("error", () => reject(new Error("アバターの送信中に通信が切れました。")));
+    xhr.addEventListener("abort", () => reject(signal.reason));
+    xhr.addEventListener("loadend", () => signal.removeEventListener("abort", abort), { once: true });
+    signal.addEventListener("abort", abort, { once: true });
+    xhr.send(body);
+  });
+}
+
+async function uploadAvatar(file, format, { id, session, signal }, onProgress) {
   const path = `./api/vrm/${id}`;
   const putPath = format === "glb" ? `${path}?format=glb` : path;
+  const transfer = { session, signal };
   if (file.size <= vrmPartSize) {
-    return request(putPath, { method: "PUT", body: file, session });
+    return sendAvatarPart(putPath, file, transfer, onProgress);
   }
 
   let upload;
   try {
-    upload = await request(path, { method: "POST", session });
+    upload = await request(path, { method: "POST", session, signal });
   } catch (error) {
     if (error.status !== 405) throw error;
-    return request(putPath, { method: "PUT", body: file, session });
+    return sendAvatarPart(putPath, file, transfer, onProgress);
   }
 
   const query = new URLSearchParams({ revision: upload.revision, uploadId: upload.uploadId });
@@ -922,11 +1019,11 @@ async function uploadAvatar(file, format, { id, session }) {
     for (let offset = 0; offset < file.size; offset += vrmPartSize) {
       query.set("part", String(parts.length + 1));
       const body = file.slice(offset, offset + vrmPartSize);
-      parts.push(await request(`${path}?${query}`, { method: "PUT", body, session }));
+      parts.push(await sendAvatarPart(`${path}?${query}`, body, transfer, (sent) => onProgress(offset + sent)));
     }
     query.delete("part");
     if (format === "glb") query.set("format", "glb");
-    return await request(`${path}?${query}`, { method: "PATCH", body: { parts }, session });
+    return await request(`${path}?${query}`, { method: "PATCH", body: { parts }, session, signal });
   } catch (error) {
     query.delete("part");
     await request(`${path}?${query}`, { method: "DELETE", session }).catch(() => {});
@@ -1027,20 +1124,29 @@ async function importAvatar(files) {
   if (!scene) throw new Error("アバターを読み込むには3D表示が必要です。");
   if (!token) throw new Error("街に接続してからアバターを読み込んでください。");
   const generation = sessionGeneration;
-  const uploadSession = { id: current().id, session: token };
+  avatarUpload = new AbortController();
+  const { signal } = avatarUpload;
+  const uploadSession = { id: current().id, session: token, signal };
+  const load = (message, received, total) => {
+    if (!signal.aborted) setAvatarLoad("upload", { name: "自分のアバター", message, received, total });
+  };
   let url;
   vrmUploading = true;
   update();
   try {
-    notify("アバターを読み込んでいます…");
+    load("ファイルを確認中");
     const { prepareAvatar } = await import("./avatar-import.js");
-    const model = await prepareAvatar(files, chooseAvatarModel, notify, chooseFbxOptions);
+    const model = await prepareAvatar(files, chooseAvatarModel, load, chooseFbxOptions);
     if (!model || generation !== sessionGeneration) return;
     url = URL.createObjectURL(model.blob);
-    await scene.loadVRM(url, { allowModel: model.format === "glb" });
+    load("表示を準備中");
+    await scene.loadVRM(url, { allowModel: model.format === "glb", signal });
     if (generation !== sessionGeneration) return;
-    notify("アバターをアップロードしています…");
-    const result = await uploadAvatar(model.blob, model.format, uploadSession);
+    load("送信中", 0, model.blob.size);
+    const result = await uploadAvatar(model.blob, model.format, uploadSession, (sent) => {
+      if (sent >= model.blob.size) load("街に反映中");
+      else load("送信中", sent, model.blob.size);
+    });
     if (generation !== sessionGeneration) return;
     accept(result.state, generation);
     notify("アバターに着替えました。");
@@ -1050,6 +1156,8 @@ async function importAvatar(files) {
     throw new Error(error.message || "アバターを読み込めませんでした。");
   } finally {
     if (url) URL.revokeObjectURL(url);
+    avatarUpload = null;
+    setAvatarLoad("upload", null);
     vrmUploading = false;
     update();
   }
