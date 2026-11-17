@@ -1,4 +1,4 @@
-import { initScene } from "./scene.js?v=2";
+import { initScene } from "./scene.js?v=3";
 import { connectPresence } from "./presence.js?v=2";
 import { createVoice } from "./voice.js";
 import { ROOM_COLORS, ROOM_LABELS, STYLE_FLOORS, STYLE_LABELS } from "./world/design.js";
@@ -394,6 +394,7 @@ function drawMap() {
   const map = $("minimap");
   if (!map) return;
   const ctx = map.getContext("2d");
+  if (!ctx) return;
   const layout = town();
   // The map keeps the town's proportions however far it has grown.
   const scale = Math.min(map.width / layout.width, map.height / layout.height);
@@ -837,7 +838,7 @@ function walkTo(point) {
 function reportMove(next) {
   const moved = !position || position.x !== next.x || position.y !== next.y || position.z !== next.z;
   position = next;
-  if (moved) drawMap();
+  if (moved && !scene?.vr.active()) drawMap();
   if (state) presence?.push({ ...next, warp: next.warp ?? current().warp ?? 0, layout: state.layout });
 }
 

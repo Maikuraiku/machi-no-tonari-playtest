@@ -130,7 +130,6 @@ export function initScene(container, callbacks = {}) {
 
   let state = {}
   let quality = 'medium'
-  let drawnQuality = null
   let mode = 'follow'
   let yaw = 0.62
   let pitch = 0.5
@@ -922,9 +921,9 @@ export function initScene(container, callbacks = {}) {
   }
 
   function watchXRReference(reference) {
-    xrReference?.removeEventListener('reset', resetPhysicalWalking)
+    xrReference?.removeEventListener?.('reset', resetPhysicalWalking)
     xrReference = reference
-    xrReference?.addEventListener('reset', resetPhysicalWalking)
+    xrReference?.addEventListener?.('reset', resetPhysicalWalking)
     resetPhysicalWalking()
   }
 
@@ -937,6 +936,10 @@ export function initScene(container, callbacks = {}) {
     }
     xrOrientation.setFromAxisAngle(xrUp, xrYaw)
     const { position: headPosition } = viewer.transform
+    if (!Number.isFinite(headPosition.x) || !Number.isFinite(headPosition.z)) {
+      resetPhysicalWalking()
+      return null
+    }
     xrOrigin.set(headPosition.x, 0, headPosition.z).applyQuaternion(xrOrientation)
     xrStep.set(0, 0, 0)
     if (viewer.emulatedPosition) previousHead = null
@@ -1024,7 +1027,6 @@ export function initScene(container, callbacks = {}) {
     xrTurned = false
     xrOrigin.set(0, 0, 0)
     watchXRReference(renderer.xr.getReferenceSpace())
-    applyQuality()
     avatars.setLocalHidden(true)
     callbacks.onVR?.(true)
   })
@@ -1035,7 +1037,7 @@ export function initScene(container, callbacks = {}) {
     avatars.setLocalHidden(firstPerson())
     snapCamera = true
     camera.fov = 55
-    applyQuality()
+    resize()
     callbacks.onVR?.(false)
   })
 
@@ -1067,7 +1069,6 @@ export function initScene(container, callbacks = {}) {
       pan.z += (-Math.sin(yaw) * inputX - Math.cos(yaw) * inputY) * scale
       move(delta, 0, 0)
     } else move(delta, inputX + handX, inputY + handY, xrStep.x, xrStep.z)
-    report(performance.now(), Boolean(previousPose) !== Boolean(xrPose))
     showBuildings(delta)
     placeCamera(delta)
     if (!immersive()) {
@@ -1089,22 +1090,15 @@ export function initScene(container, callbacks = {}) {
       label.scale.set(size * label.userData.aspect, size, 1)
     }
     renderer.render(world, camera)
-  }
-
-  function applyQuality() {
-    const effective = immersive() ? 'low' : quality
-    if (!immersive()) renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, effective === 'high' ? 2 : effective === 'medium' ? 1.5 : 1.25))
-    if (drawnQuality !== effective) {
-      drawnQuality = effective
-      setDetail(effective === 'high' ? 2 : effective === 'medium' ? 1 : 0)
-      environment.setQuality(effective)
-    }
-    resize()
+    report(performance.now(), Boolean(previousPose) !== Boolean(xrPose))
   }
 
   function setQuality(next) {
     quality = ['low', 'medium', 'high'].includes(next) ? next : 'medium'
-    applyQuality()
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, quality === 'high' ? 2 : quality === 'medium' ? 1.5 : 1.25))
+    setDetail(quality === 'high' ? 2 : quality === 'medium' ? 1 : 0)
+    environment.setQuality(quality)
+    resize()
   }
 
   setQuality(coarse ? 'low' : 'high')
@@ -1172,8 +1166,12 @@ export function initScene(container, callbacks = {}) {
       async enter() {
         const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'] })
         renderer.xr.setReferenceSpaceType('local-floor')
-        renderer.xr.setFramebufferScaleFactor(0.85)
-        await renderer.xr.setSession(session)
+        try {
+          await renderer.xr.setSession(session)
+        } catch (error) {
+          await session.end().catch(() => {})
+          throw error
+        }
       },
       exit: () => renderer.xr.getSession()?.end(),
     },
