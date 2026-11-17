@@ -469,7 +469,7 @@ function renderPanel() {
   if (activeTab === "shop") node.innerHTML = shop();
   if (activeTab === "home") node.innerHTML = homes();
   if (activeTab === "edit") node.innerHTML = editor();
-  if (activeTab === "avatar") node.innerHTML = wardrobe();
+  if (activeTab === "avatar") renderWardrobe(node, me);
 }
 
 function guide(loc) {
@@ -651,19 +651,26 @@ function editor() {
       }).join("")}</div>` : ""}`;
 }
 
-function wardrobe() {
-  const me = current();
-  return `<div class="stack">
-    <p class="panel-intro">好きな姿で街へ出かけましょう。</p>
-    ${state ? `<div class="row resident"><span>表示名：<strong>${escape(me.name)}</strong></span>
-      ${btn("変更", "rename", "button-ghost")}</div>` : ""}
-    <label class="field card upload-card">アバターを読み込む
-      <input type="file" id="avatar-file" multiple
-        accept=".vrm,.glb,.fbx,.unitypackage,.png,.jpg,.jpeg,.webp,.bmp,.gif,.mat,.prefab,.meta,.controller,.anim,.asset" ${vrmUploading ? "disabled" : ""}>
-      <small>${vrmUploading ? "読み込み中…" : "VRM・GLB・VRChat向けFBX／Unityパッケージ"}</small>
-    </label>
-    <p class="muted">FBXと別ファイルの画像は、まとめて選べます。</p>
-    ${me.avatarHasAfk ? btn(me.afk ? "離席モードを解除" : "離席モードにする", "toggle-afk", "button-primary",
+function renderWardrobe(node, me) {
+  // Keep the native picker connected while room updates refresh the wardrobe.
+  if (!$("avatar-file")) {
+    node.innerHTML = `<div class="stack">
+      <p class="panel-intro">好きな姿で街へ出かけましょう。</p>
+      <div class="row resident" id="avatar-resident"><span>表示名：<strong id="avatar-name"></strong></span>
+        ${btn("変更", "rename", "button-ghost")}</div>
+      <label class="field card upload-card">アバターを読み込む
+        <input type="file" id="avatar-file" multiple aria-describedby="avatar-file-help">
+        <small id="avatar-file-help">VRM・GLB・VRChat向けFBX／Unityパッケージ</small>
+      </label>
+      <p class="muted">「ブラウズ」から選べます。FBXと画像はまとめて選べます。</p>
+      <div class="stack" id="avatar-controls"></div>
+    </div>`;
+  }
+  $("avatar-resident").hidden = !state;
+  setText("avatar-name", me.name);
+  $("avatar-file").disabled = vrmUploading;
+  setText("avatar-file-help", vrmUploading ? "読み込み中…" : "VRM・GLB・VRChat向けFBX／Unityパッケージ");
+  $("avatar-controls").innerHTML = `${me.avatarHasAfk ? btn(me.afk ? "離席モードを解除" : "離席モードにする", "toggle-afk", "button-primary",
       `aria-pressed="${Boolean(me.afk)}" ${vrmUploading ? "disabled" : ""}`) : ""}
     ${avatarGimmicks(me)}
     ${me.vrm ? btn("標準アバターに戻る", "remove-vrm", "button-secondary", vrmUploading ? "disabled" : "") : ""}
@@ -674,7 +681,7 @@ function wardrobe() {
          ${btn(me.equipped === item.id ? "外す" : "着る", me.equipped === item.id ? "unequip" : "equip",
          "button-ghost", `data-id="${escape(item.id)}" ${compatible(item) ? "" : "disabled"}`)}</div>`
       ).join("") : '<p class="muted">服屋で買った服がここに並びます。</p>'}
-    </div></div>`;
+    </div>`;
 }
 
 function avatarGimmicks(me) {
@@ -1324,7 +1331,8 @@ document.addEventListener("submit", (event) => {
 document.addEventListener("change", (event) => {
   const control = event.target;
   if (control.id === "avatar-file" && control.files.length) {
-    const files = [...control.files];
+    const files = Array.from(control.files);
+    control.value = "";
     run(() => importAvatar(files));
   } else if (control.dataset.slider) {
     run(() => action("expression", {
