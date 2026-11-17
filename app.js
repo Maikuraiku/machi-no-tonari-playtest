@@ -1,7 +1,9 @@
-import { initScene } from "./scene.js?v=7";
-import { connectPresence } from "./presence.js?v=7";
-import { createVoice } from "./voice.js";
-import { ROOM_COLORS, ROOM_LABELS, STYLE_FLOORS, STYLE_LABELS } from "./world/design.js";
+import { initScene } from "./scene.js?v=online-1794946480502";
+import { connectPresence } from "./presence.js?v=online-1794946480502";
+import { createVoice } from "./voice.js?v=online-1794946480502";
+import { createStudio } from "./studio.js?v=online-1794946480502";
+import { FINISHES, ITEMS, ITEM_GROUPS, OPENINGS, ROOM_COLORS, ROOM_LABELS, STYLE_FLOORS, STYLE_LABELS, WALL_DECOR } from "./world/design.js?v=online-1794946480502";
+import { TOOLS, WALL_KINDS } from "./world/editor.js?v=online-1794946480502";
 
 const $ = (id) => document.getElementById(id);
 const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({
@@ -24,9 +26,13 @@ const initialMe = { id: "local", name: "あなた", ...plaza, y: 0, coins: 500, 
 const inviteFromUrl = new URL(location.href).searchParams.get("join") ?? "";
 const sessionKey = "machi-no-tonari:session";
 const qualityKey = "machi-no-tonari:quality";
+const settingsKey = "machi-no-tonari:settings";
+const narrow = () => matchMedia("(max-width: 760px)").matches;
 let token = localStorage.getItem(sessionKey) ?? "";
 let state = null;
 let activeTab = "guide";
+// Whether the drawer beside the dock is open. On a phone the town comes first.
+let panelOpen = !narrow();
 // The building this resident stands in, as the 3D view last reported it: { id, kind, level, levels }.
 let place = null;
 let preview = null;
@@ -60,6 +66,19 @@ const vrmPartSize = 32 * 1024 * 1024;
 const avatarLoads = new Map();
 const avatarLoadRows = new Map();
 let avatarLoadTimer;
+// What this browser keeps of the resident's own choices: sounds and spoken announcements.
+const settings = { sound: true, voice: true };
+try {
+  Object.assign(settings, JSON.parse(localStorage.getItem(settingsKey) ?? "{}"));
+} catch {
+  // Settings that cannot be read are simply the usual ones.
+}
+// The trial run of the monorail: on this screen only, and never kept.
+let transitPreview = false;
+// The building being designed wall by wall, as the 3D view shows it: { houseId, design, stamp, level }.
+let designDraft = null;
+let draftTimer = 0;
+let studio = null;
 
 const current = () => state?.me ?? initialMe;
 const town = () => state?.town ?? initialTown;
@@ -74,6 +93,8 @@ const compatible = (item) => !current().vrm || isAccessory(item);
 const matches = (a, b) => a && b && a.x === b.x && a.z === b.z;
 const formatter = new Intl.NumberFormat("ja");
 const fmt = (value) => formatter.format(value);
+const designing = () => Boolean(studio?.isOpen());
+const icon = (name) => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"/></svg>`;
 
 function setText(id, value) {
   const node = $(id);
@@ -82,15 +103,15 @@ function setText(id, value) {
 
 function notify(message) {
   const toast = $("toast");
-  if (!toast) return;
+  if (!toast || !message) return;
   toast.textContent = message;
   toast.hidden = false;
-  toast.classList.add("visible", "is-visible");
   window.clearTimeout(toastTimeout);
   toastTimeout = window.setTimeout(() => {
-    toast.classList.remove("visible", "is-visible");
     toast.hidden = true;
-  }, 3500);
+  }, 3800);
+  // In a headset the page is out of sight: the same words are shown in the town itself.
+  scene?.vr.notify?.(message);
 }
 
 function drawAvatarLoads() {
@@ -363,7 +384,7 @@ async function join(name, code) {
     localStorage.setItem(`${sessionKey}:${result.state.code}`, token);
     accept(result.state);
     startPresence();
-    setTab("guide");
+    openPanel("guide", !narrow());
     const url = new URL(location.href);
     url.searchParams.delete("join");
     history.replaceState(null, "", url);
@@ -404,6 +425,13 @@ function reportAvatar({ revision, values, states, controls }) {
 }
 
 let scene = null;
+// The lift this resident stands in, as the 3D view last reported it: { levels, level, target }.
+let lift = null;
+// The door within reach of this resident: { open, lock, locked, key } or nothing.
+let door = null;
+// The train this resident rides or waits for, as the 3D view last reported it.
+let ride = null;
+
 function makeScene() {
   try {
     scene = initScene($("scene"), {
@@ -411,13 +439,32 @@ function makeScene() {
       onTarget: clickTarget,
       onMove: reportMove,
       onPlace: enterPlace,
-      onVR: () => update(),
+      onLift: (next) => { lift = next; drawActionBar(); syncVR(); },
+      onDoor: (next) => { door = next; drawActionBar(); syncVR(); },
+      onRide: (next) => { ride = next; drawActionBar(); syncVR(); },
+      onNotice: notify,
+      onDoorChange: (change) => run(() => action("door", change).catch((error) => { refresh().catch(() => {}); throw error; })),
+      onLockChange: (change) => run(async () => {
+        await action("lock", change);
+        notify(change.locked ? "鍵をかけました。" : "鍵を開けました。開けたままだと、だれでも入れます。");
+      }),
+      onVR: (on) => {
+        document.body.classList.toggle("immersive", Boolean(on));
+        update();
+      },
       onAvatarState: reportAvatar,
       onAvatarLoad: reportAvatarLoad,
+      // The pencil of the design tools, held by the mouse in the 3D view or by a hand in VR.
+      onDesignPointer: (phase, spot) => studio?.editor?.pointer(phase, spot ?? { x: 0, z: 0 }),
+      // A button of the menu a hand holds in VR: the same commands as the buttons of the page.
+      onMenu: (name, data = {}) => {
+        if (handlers[name]) run(() => handlers[name](data)).finally(syncVR);
+      },
     });
     const saved = localStorage.getItem(qualityKey);
     if (saved) scene.setQuality(saved);
     scene.setCamera(viewMode);
+    scene.setSound?.(settings);
     scene.vr.supported().then((supported) => {
       vrReady = supported;
       update();
@@ -428,10 +475,12 @@ function makeScene() {
   }
 }
 
+const editing = () => !place && !designing() && (activeTab === "edit" || Boolean(building));
+
 // The camera the game wants right now: editing looks down on the town, trying clothes moves in close.
 function wantedCamera() {
   if (inShop() && preview) return "close";
-  if (!place && (activeTab === "edit" || building)) return "overview";
+  if (editing()) return "overview";
   return viewMode;
 }
 
@@ -444,56 +493,119 @@ function avatar(player, index) {
   };
 }
 
-// The always-visible controls: which camera, which storey, and VR when a headset is there.
+// Which camera, and VR when a headset is there.
 function drawViewBar() {
   const bar = $("view-bar");
   if (!bar) return;
   const immersive = Boolean(scene?.vr.active());
-  const key = JSON.stringify([viewMode, place, vrReady, immersive]);
+  const key = JSON.stringify([viewMode, vrReady, immersive]);
   if (bar.dataset.key === key) return;
   bar.dataset.key = key;
-  bar.innerHTML = `<div class="view-group" role="group" aria-label="視点">${Object.entries(cameraNames).map(([mode, label]) =>
-    `<button type="button" data-action="view" data-id="${mode}" aria-pressed="${viewMode === mode}">${label}</button>`).join("")}</div>
-    ${place && place.levels > 1 ? `<div class="view-group" role="group" aria-label="階の移動">
-      <button type="button" data-action="floor" data-id="1" ${place.level + 1 < place.levels ? "" : "disabled"} aria-label="上の階へ">▲</button>
-      <span>${place.level + 1}階</span>
-      <button type="button" data-action="floor" data-id="-1" ${place.level > 0 ? "" : "disabled"} aria-label="下の階へ">▼</button>
-    </div>` : ""}
-    ${vrReady ? `<div class="view-group"><button type="button" data-action="vr" aria-pressed="${immersive}">VR</button></div>` : ""}`;
+  bar.innerHTML = `${Object.entries(cameraNames).map(([mode, label]) =>
+    `<button type="button" data-action="view" data-id="${mode}" aria-pressed="${viewMode === mode}">${label}</button>`).join("")}
+    ${vrReady ? `<button type="button" class="vr" data-action="vr" aria-pressed="${immersive}">${icon("vr")}VR</button>` : ""}`;
+}
+
+// What can be done where the resident stands: storeys, the door within reach, the lift, the
+// train; and what the town is waiting for (a place to build, a tile to move something to).
+function drawActionBar() {
+  const bar = $("action-bar");
+  if (!bar) return;
+  const groups = [];
+  if (building) {
+    groups.push(`<span class="act-label">${STYLE_LABELS[building.style]}（${building.w}×${building.d}マス）を建てる場所をクリック</span>
+      <button type="button" class="act" data-action="cancel-build"><kbd>Esc</kbd>やめる</button>`);
+  } else if (editing()) {
+    groups.push(`<span class="act-label">${selection?.target ? (selection.from ? "移動先のマスをクリック" : "道路を敷くマスをクリック") : "街の編集中：建物か道路をクリック"}</span>
+      ${selection ? '<button type="button" class="act" data-action="cancel-edit">選択を解除</button>' : ""}
+      <button type="button" class="act" data-action="end-edit">編集を終える</button>`);
+  }
+  if (ride) {
+    groups.push(`<span class="act-label">${icon("train")} ${escape(ride.text)}</span>`);
+  }
+  if (lift) {
+    groups.push(`<span class="act-label">行き先</span>${lift.levels.map((level) => `<button type="button" class="act square" data-action="ride" data-id="${level}"
+      aria-pressed="${(lift.target ?? lift.level) === level}" ${lift.level === null ? "disabled" : ""} aria-label="${level + 1}階へ">${level + 1}</button>`).join("")}`);
+  } else if (place && place.levels > 1) {
+    groups.push(`<button type="button" class="act square" data-action="floor" data-id="-1" ${place.level > 0 ? "" : "disabled"} aria-label="下の階へ" title="下の階へ（PageDown）">${icon("down")}</button>
+      <span class="act-label">${place.level + 1}階</span>
+      <button type="button" class="act square" data-action="floor" data-id="1" ${place.level + 1 < place.levels ? "" : "disabled"} aria-label="上の階へ" title="上の階へ（PageUp）">${icon("up")}</button>`);
+  }
+  if (door) {
+    groups.push(`<button type="button" class="act" data-action="use-door" ${!door.open && door.locked && !door.key ? "disabled" : ""}><kbd>F</kbd>${
+      door.open ? "扉を閉める" : door.locked && !door.key ? "鍵がかかっています" : "扉を開ける"}</button>
+      ${door.lock && door.key ? `<button type="button" class="act" data-action="use-lock" aria-pressed="${!door.locked}"><kbd>L</kbd>${door.locked ? "鍵を開ける" : "鍵をかける"}</button>`
+        : door.lock && !door.locked ? '<span class="act-label">鍵は開いています</span>' : ""}`);
+  }
+  if (place && !building) groups.push('<button type="button" class="act" data-action="leave-home">外に出る</button>');
+  const html = groups.map((group) => `<div class="act-group">${group}</div>`).join("");
+  if (bar.dataset.html !== html) {
+    bar.dataset.html = html;
+    bar.innerHTML = html;
+  }
+  bar.hidden = !groups.length;
 }
 
 const ownerName = (house) => state?.players.find((player) => player.id === house.ownerId)?.name ?? "住人";
 const houseTitle = (house) => (house.ownerId === current().id ? kinds[house.kind] : `${ownerName(house)}の${kinds[house.kind]}`);
 
+// Tells the 3D view how much of the screen the panels cover, so that it keeps what matters clear of them.
+function syncInsets() {
+  if (!scene) return;
+  if (designing()) {
+    scene.setInsets(studio.covered());
+    return;
+  }
+  if (narrow()) {
+    const drawer = panelOpen ? $("panel")?.getBoundingClientRect() : null;
+    scene.setInsets({ bottom: drawer ? Math.max(0, innerHeight - drawer.top) : 0 });
+    return;
+  }
+  const edge = panelOpen ? $("panel")?.getBoundingClientRect().right : $("dock")?.getBoundingClientRect().right;
+  scene.setInsets({ left: edge ?? 0 });
+}
+
 function update() {
   const me = current();
   const home = getHouse(place?.id);
+  // A building that was pulled down while it was being designed is not designed any further.
+  if (designing() && state && !getHouse(studio.house.id)) {
+    studio.discard();
+    notify("設計していた建物は、もう街にありません。");
+    return;
+  }
   scene?.update({
     session: sessionGeneration,
     player: avatar(me, 0),
     players: (state?.players ?? []).filter((player) => player.id !== me.id && player.online)
       .map((player, index) => avatar(player, index + 1)),
     town: town(),
+    // Which doors stand open and which locks were left unlocked, house by house.
+    doors: state?.doors ?? {},
     houses: (state?.houses ?? []).map((house) => ({ ...house, label: houseTitle(house) })),
-    edit: !place && (activeTab === "edit" || Boolean(building)),
+    edit: editing(),
     selected: selection?.from ?? null,
     placing: building ? { w: building.w, d: building.d } : null,
+    design: designDraft,
+    transit: transitPreview,
   });
   scene?.setCamera(wantedCamera());
   scene?.setPreview(preview ? { outfit: preview, color: preview.color } : null);
   setText("balance", fmt(me.coins));
-  setText("location-label", home ? `${houseTitle(home)} ${place.level + 1}階`
-    : inShop() ? "服屋 ひだまり" : place?.kind === "cafe" ? "こもれび喫茶" : "ひだまり通り");
+  setText("location-label", designing() ? "設計中" : home ? `${houseTitle(home)} ${place.level + 1}階`
+    : inShop() ? "服屋 ひだまり" : place?.kind === "cafe" ? "こもれび喫茶" : place?.kind === "station" ? place.label ?? "駅" : "ひだまり通り");
   setText("room-status", state?.code ? "招待" : "接続");
   drawViewBar();
+  drawActionBar();
   const micButton = $("mic-button");
-  micButton?.classList.toggle("is-active", voice.enabled());
   micButton?.setAttribute("aria-pressed", String(voice.enabled()));
   setText("mic-label", voice.enabled() ? "マイク ON" : "ボイス");
-  const status = $("online-count");
-  if (status) status.textContent = `${state?.players.filter((player) => player.online).length ?? 1} 人`;
+  setText("online-count", String(state?.players.filter((player) => player.online).length ?? 1));
+  document.body.classList.toggle("designing", designing());
   drawMap();
   renderPanel();
+  syncInsets();
+  syncVR();
 }
 
 function drawMap() {
@@ -514,115 +626,131 @@ function drawMap() {
   for (const r of layout.roads) ctx.fillRect(left + r.x * scale, top + r.z * scale, scale + .4, scale + .4);
   ctx.fillStyle = "#e9dfc8";
   ctx.fillRect(left + layout.plaza.x * scale, top + layout.plaza.z * scale, scale, scale);
-  for (const [place, color] of [[layout.shop, "#d58a74"], [layout.cafe, "#cdb06b"], ...((state?.houses ?? []).map((h) => [h, "#5f8f97"]))]) {
-    if (!place) continue;
+  for (const [spot, color] of [[layout.shop, "#d58a74"], [layout.cafe, "#cdb06b"], ...((state?.houses ?? []).map((h) => [h, h.ownerId === current().id ? "#1f7a6a" : "#5f8f97"]))]) {
+    if (!spot) continue;
     ctx.fillStyle = color;
-    ctx.fillRect(left + place.x * scale, top + place.z * scale, (place.w ?? 1) * scale, (place.d ?? 1) * scale);
+    ctx.fillRect(left + spot.x * scale, top + spot.z * scale, (spot.w ?? 1) * scale, (spot.d ?? 1) * scale);
+  }
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 1.5;
+  for (const other of (state?.players ?? []).filter((entry) => entry.id !== current().id && entry.online)) {
+    ctx.beginPath();
+    ctx.arc(left + (other.x + .5) * scale, top + (other.z + .5) * scale, 3, 0, Math.PI * 2);
+    ctx.fillStyle = "#e8862e";
+    ctx.fill();
+    ctx.stroke();
   }
   const player = position ?? current();
   ctx.beginPath();
-  ctx.arc(left + (player.x + .5) * scale, top + (player.z + .5) * scale, 3.5, 0, Math.PI * 2);
-  ctx.fillStyle = "#436964";
+  ctx.arc(left + (player.x + .5) * scale, top + (player.z + .5) * scale, 4.2, 0, Math.PI * 2);
+  ctx.fillStyle = "#1d2a33";
   ctx.fill();
-  ctx.strokeStyle = "#fff";
-  ctx.lineWidth = 1;
   ctx.stroke();
 }
 
-function setTab(tab) {
-  if (!["shop", "guide", "home", "edit", "avatar"].includes(tab)) return;
+// ---- The dock and its drawer --------------------------------------------------------
+
+const titles = {
+  guide: ["TOWN GUIDE", "まちの案内"],
+  shop: ["WARDROBE", "服屋 ひだまり"],
+  home: ["MY HOMES", "家づくり"],
+  edit: ["TOWN BUILDER", "街の編集"],
+  avatar: ["AVATAR", "アバター"],
+  settings: ["SETTINGS", "設定"],
+};
+
+// Opens the drawer at a tab (or with `open` false only makes the tab the current one).
+function openPanel(tab = activeTab, open = true) {
+  if (!Object.hasOwn(titles, tab)) return;
   if (activeTab !== tab && tab !== "shop") preview = null;
   if (tab !== "edit") selection = null;
   if (tab !== "home") building = null;
   activeTab = tab;
+  panelOpen = open;
   renderKey = "";
-  document.querySelectorAll("[data-tab]").forEach((node) => {
-    const on = node.dataset.tab === tab;
-    node.classList.toggle("active", on);
-    node.classList.toggle("is-active", on);
-    node.setAttribute("aria-pressed", String(on));
-  });
   update();
 }
+const setTab = (tab) => openPanel(tab, panelOpen);
 
-const titles = {
-  shop: ["WARDROBE", "服屋 ひだまり"],
-  guide: ["TOWN GUIDE", "まちの案内"],
-  home: ["MY HOMES", "家を建てる"],
-  edit: ["TOWN BUILDER", "街の編集"],
-  avatar: ["AVATAR", "アバター"],
-};
-const btn = (label, actionName, className = "button-secondary", attrs = "") =>
-  `<button type="button" class="button ${className}" data-action="${actionName}" ${attrs}>${label}</button>`;
+function drawDock() {
+  document.querySelectorAll("#dock [data-tab]").forEach((node) => {
+    node.setAttribute("aria-pressed", String(panelOpen && node.dataset.tab === activeTab));
+  });
+  const panel = $("panel");
+  if (panel) panel.hidden = !panelOpen;
+  document.body.classList.toggle("panel-open", panelOpen);
+}
+
+const btn = (label, actionName, className = "soft", attrs = "") =>
+  `<button type="button" class="btn ${className}" data-action="${actionName}" ${attrs}>${label}</button>`;
 
 function renderPanel() {
+  drawDock();
   const node = $("panel-content");
-  if (!node) return;
+  if (!node || !panelOpen) return;
   const me = current();
-  const loc = getHouse(place?.id);
   const key = JSON.stringify([activeTab, place, preview?.id, building, buildChoice, selection,
     selectedHouse, planFloor, brush, me.owned, me.equipped, me.vrm,
     me.avatarHasAfk, me.afk, me.avatarExpressions, me.avatarExpressionValues, vrmUploading, me.coins, me.name,
     state?.layout, state?.players.map((p) => [p.id, p.name, p.online, p.muted, voice.silenced(p.id)]),
-    state?.editorIds, scene?.quality(), Boolean(state)]);
+    state?.editorIds, scene?.quality(), Boolean(state), settings, transitPreview, vrReady]);
   // Repainting would cut a brush stroke short, so the panel waits until it ends.
   if (renderKey === key || stroke) return;
   renderKey = key;
   setText("panel-kicker", titles[activeTab][0]);
   setText("panel-title", titles[activeTab][1]);
   $("panel-icon")?.querySelector("use")?.setAttribute("href", `#i-${activeTab}`);
-  if (activeTab === "guide") node.innerHTML = guide(loc);
+  if (activeTab === "guide") node.innerHTML = guide();
   if (activeTab === "shop") node.innerHTML = shop();
   if (activeTab === "home") node.innerHTML = homes();
   if (activeTab === "edit") node.innerHTML = editor();
+  if (activeTab === "settings") node.innerHTML = settingsPanel();
   if (activeTab === "avatar") renderWardrobe(node, me);
 }
 
-function guide(loc) {
+function guide() {
   const goals = [
-    [current().owned.length > 0, "服屋をのぞく", "試着して、好きな服を買ってみよう。", "open-shop", "shop", "blush"],
-    [(state?.houses ?? []).some((h) => h.ownerId === current().id), "はじめての家", "空いている場所を選んで、自分の家を建てよう。", "open-homes", "home", "mint"],
-    [state?.players.length > 1, "友達を呼ぶ", "招待リンクで同じ街に集まろう。", "room", "users", "blue"],
+    [current().owned.length > 0, "服屋をのぞく", "試着して、好きな服を買ってみよう。", "open-shop", "shop", "warm"],
+    [(state?.houses ?? []).some((h) => h.ownerId === current().id), "はじめての家", "空いている場所を選んで、自分の家を建てよう。", "open-homes", "home", ""],
+    [state?.players.length > 1, "友達を呼ぶ", "招待リンクで同じ街に集まろう。", "room", "users", "sky"],
   ];
-  const card = ([done, title, help, act, icon, color]) =>
-    `<button type="button" class="card guide-card" data-action="${act}">
-      <span class="guide-icon ${color}" aria-hidden="true">${done ? "✓" : `<svg class="icon"><use href="#i-${icon}"/></svg>`}</span>
-      <span><strong>${title}</strong><small>${help}</small></span><svg class="icon guide-arrow"><use href="#i-arrow"/></svg>
+  const card = ([done, title, help, act, symbol, tone]) =>
+    `<button type="button" class="goal" data-action="${act}">
+      <span class="goal-icon ${done ? "done" : tone}">${icon(done ? "check" : symbol)}</span>
+      <span><strong>${title}</strong><small>${help}</small></span>${icon("arrow")}
     </button>`;
   // Towns made before the name prompt existed gave their first resident this placeholder name.
   const unnamed = state && current().name === "あなた";
-  return `<p class="panel-intro">今日は、この街で何をしよう？</p>
-    ${unnamed ? `<div class="stack guide-list">${card([false, "名前を決める",
-      "友達の画面に表示される名前を決めよう。", "rename", "avatar", "blush"])}</div>` : ""}
-    <div class="stack guide-list">
-    ${goals.map(card).join("")}
+  const online = (state?.players ?? []).filter((p) => p.online).length || 1;
+  return `<p class="lead">今日は、この街で何をしよう？</p>
+    <div class="stack">
+      ${unnamed ? card([false, "名前を決める", "友達の画面に表示される名前を決めよう。", "rename", "avatar", "warm"]) : ""}
+      ${goals.map(card).join("")}
     </div>
-    <div class="panel-section">
-      <p class="eyebrow">街にいる人</p>
+    <section class="section">
+      <div class="section-title"><span>街にいる人</span><span>${online}人</span></div>
       ${people()}
-    </div>
-    <div class="panel-section">
-      <label class="field">画質<select data-setting="quality">${Object.entries(qualityNames).map(([value, label]) =>
-        `<option value="${value}" ${scene?.quality() === value ? "selected" : ""}>${label}</option>`).join("")}</select></label>
-      <p class="muted">「きれい」は海や窓に景色が映ります。動きが重いときは「軽い」にしてください。</p>
-    </div>`;
+    </section>`;
 }
 
 function people() {
-  const peers = (state?.players ?? []).filter((p) => p.id !== current().id && p.online);
-  if (!peers.length) return `<p class="muted">いまはあなたが街にいます。</p>`;
-  return peers.map((p) => `<div class="row resident"><span>${escape(p.name)}</span>
-    ${btn(voice.silenced(p.id) ? "ミュート解除" : "ミュート", "silence", "button-ghost",
-    `data-id="${escape(p.id)}"`)}</div>`).join("");
+  const me = current();
+  const peers = (state?.players ?? []).filter((p) => p.id !== me.id && p.online);
+  return `<div class="list">
+    <div class="list-row"><span>${escape(me.name)}（あなた）</span>${btn("名前を変える", "rename", "ghost small")}</div>
+    ${peers.map((p) => `<div class="list-row"><span>${escape(p.name)}</span>
+      ${btn(voice.silenced(p.id) ? "ミュート解除" : "ミュート", "silence", "ghost small", `data-id="${escape(p.id)}"`)}</div>`).join("")}
+  </div>
+  ${peers.length ? "" : '<p class="note">いまはあなただけが街にいます。「招待」で友達を呼べます。</p>'}`;
 }
 
 function shop() {
-  if (!inShop()) return `<p class="panel-intro">お店に入ると、アバターに似合う服を試着できます。歩いて入るか、下のボタンで向かいましょう。</p>
-    ${btn("服屋へ行く", "open-shop", "button-primary")}`;
-  return `<p class="panel-intro">試着して、気に入った服を選びましょう。</p>
+  if (!inShop()) return `<p class="lead">お店に入ると、アバターに似合う服を試着できます。歩いて入るか、下のボタンで向かいましょう。</p>
+    ${btn(`${icon("shop")}<span>服屋へ行く</span>`, "open-shop", "primary block")}`;
+  return `<p class="lead">試着して、気に入った服を選びましょう。</p>
     <div class="item-grid">${catalog().map(shopCard).join("")}</div>
-    ${current().vrm ? '<p class="muted">持ち込みアバターでは、対応する帽子を試着できます。</p>' : ""}
-    <div class="panel-section">${btn("お店を出る", "leave-shop", "button-ghost")}</div>`;
+    ${current().vrm ? '<p class="note">持ち込みアバターでは、対応する帽子を試着できます。</p>' : ""}
+    ${btn("お店を出る", "leave-shop", "ghost block")}`;
 }
 
 function shopCard(item) {
@@ -630,61 +758,62 @@ function shopCard(item) {
   const selected = preview?.id === item.id;
   const valid = compatible(item);
   const attribute = `data-id="${escape(item.id)}"`;
-  const icon = isAccessory(item) ? "i-hat" : "i-shirt";
-  return `<div class="item-card card ${selected ? "selected" : ""}">
+  return `<div class="item-card ${selected ? "selected" : ""}">
     <button type="button" class="item-swatch" style="--swatch:${escape(item.color)}" data-action="try" ${attribute}
-      ${valid ? "" : "disabled"} aria-label="${escape(item.name)}を試着"><svg class="icon"><use href="#${icon}"/></svg></button>
+      ${valid ? "" : "disabled"} aria-label="${escape(item.name)}を試着">${icon(isAccessory(item) ? "hat" : "shirt")}</button>
     <strong>${escape(item.name)}</strong><small>${owned ? "購入済み" : valid ? `${fmt(item.price)} コイン` : "標準アバター用"}</small>
     ${valid ? btn(owned ? "着る" : selected ? "購入する" : "試着", owned ? "equip" : selected ? "buy" : "try",
-    selected ? "button-primary" : "button-secondary", attribute) : ""}
+    `${selected ? "primary" : "soft"} small`, attribute) : ""}
     </div>`;
 }
 
 const option = (value, label, chosen) =>
   `<option value="${escape(value)}" ${String(value) === String(chosen) ? "selected" : ""}>${escape(label)}</option>`;
-const houseButton = (house) => btn(`${escape(houseTitle(house))}・${STYLE_LABELS[house.style]}`, "home-detail",
-  house.id === selectedHouse ? "button-primary" : "button-secondary", `data-id="${escape(house.id)}"`);
+const houseButton = (house) => `<button type="button" class="house-button" data-action="home-detail" data-id="${escape(house.id)}" aria-pressed="${house.id === selectedHouse}">
+    ${icon("home")}<span><strong>${escape(houseTitle(house))}</strong><small>${STYLE_LABELS[house.style]}・${house.floors.length}階建て・${house.w}×${house.d}マス${house.design ? "・詳細設計" : ""}</small></span>${icon(house.id === selectedHouse ? "up" : "down")}
+  </button>${house.id === selectedHouse ? homeDetail(house, false) : ""}`;
 
 function homes() {
   const me = current();
   const houses = state?.houses ?? [];
   const loc = getHouse(place?.id);
-  if (loc) return `${btn("外に出る", "leave-home", "button-primary")}${homeDetail(loc, true)}`;
+  if (loc) return `<p class="lead">${escape(houseTitle(loc))}の中にいます。</p>${homeDetail(loc, true)}`;
   if (building) {
-    return `<p class="panel-intro">${STYLE_LABELS[building.style]}（${building.w}×${building.d}マス）を建てる場所を、地図から選んでください。</p>
-      ${btn("建築をキャンセル", "cancel-build", "button-ghost")}`;
+    return `<p class="lead">${STYLE_LABELS[building.style]}（${building.w}×${building.d}マス）を建てる場所を、街の空き地から選んでください。</p>
+      ${btn("建てるのをやめる", "cancel-build", "ghost block")}`;
   }
   const mine = houses.filter((house) => house.ownerId === me.id);
   const others = houses.filter((house) => house.ownerId !== me.id);
-  const home = getHouse(selectedHouse);
-  return `<p class="panel-intro">様式と敷地の広さを選んで建てます。間取りはあとから自由に変えられます。</p>
-    <form data-form="build" class="stack card">
+  return `<p class="lead">敷地と様式を選んで建て、あとから壁一枚ずつ設計できます。</p>
+    <form data-form="build" class="card">
       <label class="field">使い方<select name="kind">${Object.entries(kinds).map(([value, label]) =>
         option(value, label, buildChoice.kind)).join("")}</select></label>
       <label class="field">様式<select name="style">${Object.entries(STYLE_LABELS).map(([value, label]) =>
-        option(value, label, buildChoice.style)).join("")}</select></label>
+        option(value, value === "brutal" ? `${label}（更地から設計）` : label, buildChoice.style)).join("")}</select></label>
       <label class="field">敷地<select name="size">${lotSizes.map(([w, d]) =>
         option(`${w}x${d}`, `${w}×${d}マス（約${w * 8}m×${d * 8}m）`, buildChoice.size)).join("")}</select></label>
-      <button class="button button-primary" type="submit">建てる場所を選ぶ</button>
+      <button class="btn primary block" type="submit">${icon("pin")}<span>建てる場所を選ぶ</span></button>
     </form>
-    <p class="muted">自宅と別荘は招待した人だけが入れます。共同住宅は住人みんなで間取りを作り、個室は本人だけが変えられます。</p>
-    ${mine.length ? `<div class="panel-section stack"><p class="eyebrow">自分の建物</p>${mine.map(houseButton).join("")}</div>` : ""}
-    ${others.length ? `<div class="panel-section stack"><p class="eyebrow">街の建物</p>${others.map(houseButton).join("")}</div>` : ""}
-    ${home ? homeDetail(home, false) : ""}`;
+    <p class="note">自宅と別荘は鍵を渡した人だけが入れます。共同住宅は住人みんなで間取りを作ります。</p>
+    ${mine.length ? `<section class="section"><div class="section-title"><span>自分の建物</span><span>${mine.length}</span></div>${mine.map(houseButton).join("")}</section>` : ""}
+    ${others.length ? `<section class="section"><div class="section-title"><span>街の建物</span><span>${others.length}</span></div>${others.map(houseButton).join("")}</section>` : ""}`;
 }
 
 function planEditor(home, floor, inside) {
-  const width = 5 * home.w;
+  // Eight cells of 910 mm to a tile.
+  const width = 8 * home.w;
   const mine = current().id;
   const rooms = [...Object.entries(ROOM_LABELS), [".", "空き"]].filter(([code]) => code !== "P" || home.kind === "shared");
-  const tabs = home.floors.length > 1 && !inside ? `<div class="row floor-tabs">${home.floors.map((_, level) =>
+  const tabs = home.floors.length > 1 && !inside ? `<div class="chip-grid">${home.floors.map((_, level) =>
     `<button type="button" class="chip" data-action="plan-floor" data-id="${level}" aria-pressed="${level === floor}">${level + 1}階</button>`).join("")}</div>` : "";
-  const cells = Array.from(home.floors[floor], (code, index) => {
+  const cells = Array.from(home.floors[floor], (key, index) => {
+    // (A lower-case letter is the same kind of room, kept apart from its upper-case neighbour.)
+    const code = key.toUpperCase();
     const x = index % width;
     const z = Math.floor(index / width);
     const holder = home.owners?.[`${floor}:${x}:${z}`];
     const locked = Boolean(holder) && holder !== mine;
-    return `<button type="button" class="plan-cell" data-x="${x}" data-z="${z}" data-code="${code}"
+    return `<button type="button" class="plan-cell" data-x="${x}" data-z="${z}" data-code="${key}"
       style="--room:${ROOM_COLORS[code] ?? "transparent"}" ${locked ? "disabled" : ""}
       aria-label="${x + 1}列 ${z + 1}行 ${ROOM_LABELS[code] ?? "空き"}${locked ? "（ほかの住人の個室）" : ""}">${ROOM_LABELS[code]?.[0] ?? ""}</button>`;
   }).join("");
@@ -692,10 +821,24 @@ function planEditor(home, floor, inside) {
     <div class="palette" role="group" aria-label="部屋の種類">${rooms.map(([code, label]) =>
       `<button type="button" class="swatch" data-action="brush" data-id="${code}" aria-pressed="${brush === code}"
         style="--room:${ROOM_COLORS[code] ?? "#ffffff"}">${label}</button>`).join("")}</div>
-    <div class="plan-grid ${width > 10 ? "dense" : ""}" data-house="${escape(home.id)}" data-floor="${floor}" style="--columns:${width}"
+    <div class="plan-grid ${width > 8 ? "dense" : ""}" data-house="${escape(home.id)}" data-floor="${floor}" style="--columns:${width}"
       role="group" aria-label="${floor + 1}階の間取り">${cells}</div>
-    <p class="muted">部屋の種類を選んで、マスをなぞると塗れます。下が敷地の手前（南）側です。玄関は外に面したマスに置くと入口になります。</p>`;
+    <p class="note">1マスは半間（91cm）。部屋の種類を選んでマスをなぞると塗れます。下が道路側です。玄関は外に面したマスに、階段は幅1マス×長さ3〜4マスか2×2〜3マスで塗ります。</p>`;
 }
+
+// The flats of a block, as the locks that guard them ('storey:flat'), and what each is called.
+function flatsOf(home) {
+  const locks = new Set();
+  (home.units ?? []).forEach((row, level) => {
+    for (const unit of new Set(row)) if (unit !== "0") locks.add(`${level}:${unit}`);
+  });
+  return [...locks];
+}
+const flatName = (lock) => {
+  const [level, unit] = lock.split(":");
+  const number = "123456789abcdefghijklmnopqrstuvwxyz".indexOf(unit) + 1;
+  return `${Number(level) + 1}${String(number).padStart(2, "0")}号室`;
+};
 
 function homeDetail(home, inside) {
   const id = escape(home.id);
@@ -705,89 +848,124 @@ function homeDetail(home, inside) {
   const memberIds = home.memberIds ?? [];
   const floor = Math.min(inside ? place?.level ?? 0 : planFloor, home.floors.length - 1);
   const storeys = Array.from({ length: STYLE_FLOORS[home.style] }, (_, index) => index + 1);
-  return `<div class="panel-section stack">
-    <p class="eyebrow">${escape(houseTitle(home))}・${STYLE_LABELS[home.style]}・${home.floors.length}階建て</p>
-    ${!inside ? btn(home.canEnter ? "家に入る" : "招待が必要です", "enter-home", "button-primary",
-    `data-id="${id}" ${home.canEnter ? "" : "disabled"}`) : ""}
-    ${owner ? `<div class="row parts-row">
-      <label class="field">様式<select data-setting="style" data-id="${id}">${Object.entries(STYLE_LABELS).map(([value, label]) =>
+  return `<div class="card">
+    <div class="row wrap">
+      ${inside ? btn("外に出る", "leave-home", "soft grow") : btn(`${icon("pin")}<span>玄関へ行く</span>`, "enter-home", "soft grow", `data-id="${id}"`)}
+      ${home.canEdit ? btn(`${icon("pencil")}<span>設計する</span>`, "design-home", "primary grow", `data-id="${id}"`) : ""}
+    </div>
+    ${home.canEdit ? `<p class="note">「設計する」で、壁・扉・窓・家具・階段・エレベーターを一つずつ置けます。${home.design ? "この建物は詳細設計で作られています。" : ""}</p>` : ""}
+    ${owner ? `<div class="row">
+      <label class="field grow">様式<select data-setting="style" data-id="${id}">${Object.entries(STYLE_LABELS).map(([value, label]) =>
         option(value, label, home.style)).join("")}</select></label>
-      <label class="field">階数<select data-setting="floors" data-id="${id}">${storeys.map((count) =>
+      <label class="field grow">階数<select data-setting="floors" data-id="${id}">${storeys.map((count) =>
         option(count, `${count}階`, home.floors.length)).join("")}</select></label></div>` : ""}
-    ${!home.canEdit ? "" : home.design ? '<p class="muted">この建物は、壁一枚ずつの詳細設計で作られています。</p>' : planEditor(home, floor, inside)}
-    ${owner ? `<p class="eyebrow">入室できる人</p>
-      ${invitePlayers.length ? invitePlayers.map((p) =>
-        `<div class="row resident"><span>${escape(p.name)}</span>
-        ${btn(memberIds.includes(p.id) ? "招待を解除" : "招待する", "invite-home", "button-ghost",
-        `data-id="${id}" data-player="${escape(p.id)}" data-allowed="${!memberIds.includes(p.id)}"`)}</div>`)
-        .join("") : '<p class="muted">街の招待リンクを送ると、来客を選べます。</p>'}
-      <div class="row">${btn("標準の間取りに戻す", "reset-plan", "button-ghost", `data-id="${id}"`)}
-        ${btn("取り壊す", "demolish", "button-ghost", `data-id="${id}"`)}</div>` : ""}
+    ${home.canEdit && !home.design ? `<details class="stack" ${inside ? "open" : ""}><summary class="section-title" style="cursor:pointer">かんたん間取り（マス目で塗る）</summary>
+      <div class="stack" style="margin-top:9px">${planEditor(home, floor, inside)}</div></details>` : ""}
+    ${owner ? `<section class="section"><div class="section-title"><span>${icon("key")} 鍵を渡す</span></div>
+      ${invitePlayers.length ? `<div class="list">${invitePlayers.map((p) => {
+        const held = memberIds.includes(p.id) ? "main" : Object.keys(home.keys ?? {}).find((lock) => home.keys[lock].includes(p.id)) ?? "";
+        return `<label class="list-row"><span>${escape(p.name)}</span>
+        <select data-setting="key" data-id="${id}" data-player="${escape(p.id)}" aria-label="${escape(p.name)}に渡す鍵">
+          ${option("", "鍵なし", held)}${option("main", flatsOf(home).length ? "合鍵（すべての部屋）" : "合鍵", held)}
+          ${flatsOf(home).map((lock) => option(lock, `${flatName(lock)}の鍵`, held)).join("")}
+        </select></label>`;
+      }).join("")}</div>` : '<p class="note">街の招待リンクを送ると、鍵を渡す相手を選べます。</p>'}
+      <p class="note">扉は F キーかクリックで開け閉めします。鍵をかけた扉は、鍵を持つ人だけが開けられます。</p>
+      <div class="row wrap">${btn("標準の間取りに戻す", "reset-plan", "ghost small", `data-id="${id}"`)}
+        ${btn(`${icon("trash")}<span>取り壊す</span>`, "demolish", "danger small", `data-id="${id}"`)}</div></section>` : ""}
     </div>`;
 }
 
 function editor() {
-  if (place) return `<p class="panel-intro">建物の外に出てから編集できます。</p>
-    ${btn("外に出る", "leave-home", "button-primary")}`;
-  if (!canEdit()) return '<p class="panel-intro">街の管理者から編集権限を受け取ると、建物と道路を動かせます。</p>';
+  if (place) return `<p class="lead">建物の外に出てから編集できます。</p>
+    ${btn("外に出る", "leave-home", "primary block")}`;
+  if (!canEdit()) return '<p class="lead">街の管理者から編集権限を受け取ると、建物と道路を動かせます。</p>';
   const hint = selection?.target ? (selection.from ?
     "移動先のマスをクリックしてください。" : "道路を敷くマスをクリックしてください。") :
     "建物か道路をクリックし、移動先を選んでください。";
-  return `<p class="panel-intro">${hint}</p><div class="stack">
-    ${btn("服屋を動かす", "select-shop", "button-secondary")}
-    ${btn("カフェを動かす", "select-cafe", "button-secondary")}
-    ${btn("道路を追加", "add-road", "button-secondary")}
-    ${selection?.target === "road" && selection.from ? btn("選んだ道路を取り除く", "remove-road", "button-ghost") : ""}
-    ${btn("元に戻す", "undo", "button-ghost", town().canUndo ? "" : "disabled")}
-    ${selection ? btn("選択を解除", "cancel-edit", "button-ghost") : ""}
+  return `<p class="lead">${hint}</p>
+    <div class="stack">
+      <div class="row wrap">${btn("服屋を動かす", "select-shop", "soft grow")}${btn("カフェを動かす", "select-cafe", "soft grow")}</div>
+      ${btn(`${icon("plus")}<span>道路を追加</span>`, "add-road", "soft block")}
+      ${selection?.target === "road" && selection.from ? btn("選んだ道路を取り除く", "remove-road", "danger block") : ""}
+      <div class="row wrap">${btn(`${icon("undo")}<span>元に戻す</span>`, "undo", "ghost grow", town().canUndo ? "" : "disabled")}
+        ${selection ? btn("選択を解除", "cancel-edit", "ghost grow") : ""}</div>
     </div>
-    <div class="panel-section stack">
-      <p class="eyebrow">街を広げる（いま ${town().width}×${town().height}マス）</p>
+    <section class="section">
+      <div class="section-title"><span>街を広げる</span><span>いま ${town().width}×${town().height}マス</span></div>
       <div class="compass" role="group" aria-label="広げる方向">
         ${[["north", "北へ"], ["west", "西へ"], ["east", "東へ"], ["south", "南へ"]].map(([side, label]) =>
-          btn(label, "expand", "button-secondary", `data-id="${side}"`)).join("")}
+          btn(label, "expand", "soft small", `data-id="${side}"`)).join("")}
       </div>
-      <p class="muted">押した方向へ2マス広がります（各辺48マスまで）。広げると「元に戻す」の履歴は消えます。</p>
-    </div>
-    ${isHost() && (state?.players.length ?? 0) > 1 ? `<div class="panel-section stack"><p class="eyebrow">街の共同編集者</p>
-      ${state.players.filter((p) => p.id !== current().id).map((p) => {
+      <p class="note">押した方向へ2マス広がります（各辺48マスまで）。広げると「元に戻す」の履歴は消えます。</p>
+    </section>
+    ${isHost() && (state?.players.length ?? 0) > 1 ? `<section class="section"><div class="section-title"><span>街の共同編集者</span></div>
+      <div class="list">${state.players.filter((p) => p.id !== current().id).map((p) => {
         const allowed = (state.editorIds ?? []).includes(p.id);
-        return `<div class="row resident"><span>${escape(p.name)}</span>${btn(allowed ? "権限を外す" : "編集を許可",
-          "editor-role", "button-ghost", `data-id="${escape(p.id)}" data-allowed="${!allowed}"`)}</div>`;
-      }).join("")}</div>` : ""}`;
+        return `<div class="list-row"><span>${escape(p.name)}</span>${btn(allowed ? "権限を外す" : "編集を許可",
+          "editor-role", "ghost small", `data-id="${escape(p.id)}" data-allowed="${!allowed}"`)}</div>`;
+      }).join("")}</div></section>` : ""}
+    ${btn("編集を終える", "end-edit", "ghost block")}`;
+}
+
+function settingsPanel() {
+  const keys = [
+    [["W", "A", "S", "D"], "移動（矢印キーでも）"], [["V"], "三人称と一人称の切り替え"], [["Q", "E"], "視点を左右に回す"],
+    [["F"], "近くの扉を開け閉めする"], [["L"], "近くの扉の鍵をかける・開ける"], [["PgUp", "PgDn"], "建物の中で階を移動する"], [["Esc"], "選択や配置をやめる"],
+  ];
+  return `<section class="section">
+      <div class="section-title"><span>画質</span></div>
+      <div class="segmented" role="group" aria-label="画質" style="display:grid;grid-template-columns:repeat(3,1fr)">${Object.entries(qualityNames).map(([value, label]) =>
+        `<button type="button" class="seg" data-action="quality" data-id="${value}" aria-pressed="${scene?.quality() === value}">${label}</button>`).join("")}</div>
+      <p class="note">「きれい」は海や窓に景色が映り、影が細かくなります。動きが重いときは「軽い」にしてください。</p>
+    </section>
+    <section class="section">
+      <div class="section-title"><span>${icon("volume")} 音</span></div>
+      <label class="check"><input type="checkbox" data-setting="sound" ${settings.sound ? "checked" : ""}> 効果音（エレベーターの到着音・発車メロディなど）</label>
+      <label class="check"><input type="checkbox" data-setting="voice" ${settings.voice ? "checked" : ""}> 自動放送（エレベーターや車内の案内を読み上げる）</label>
+    </section>
+    <section class="section">
+      <div class="section-title"><span>${icon("train")} モノレール（試運転）</span></div>
+      <p class="note">跨座式モノレールのベースを、この画面だけで走らせて試せます。街には配置・保存されず、ほかの人の画面にも出ません。</p>
+      ${btn(transitPreview ? "試運転をやめる" : "試運転を始める", "toggle-transit", transitPreview ? "danger block" : "soft block", `aria-pressed="${transitPreview}"`)}
+      ${transitPreview ? '<p class="note">建物のない土地が横に続くいちばん長い列の両端に、仮の駅（4×1マス）と線路が建ちます。改札を通って3階のホームへ上がり、ホームドアが開いている間に乗ってください。</p>' : ""}
+    </section>
+    <section class="section">
+      <div class="section-title"><span>${icon("help")} 操作方法</span></div>
+      <dl class="keys">${keys.map(([caps, label]) => `<dt>${caps.map((cap) => `<kbd>${cap}</kbd>`).join("")}</dt><dd>${label}</dd>`).join("")}</dl>
+      <p class="note">地面をクリックするとそこへ歩きます。スマホでは左下のスティックで歩き、画面をなぞって見回します。${vrReady ? "VRでは左スティックで歩き、右スティックで向きを変え、A・B・X・Yボタンで手元メニューを開きます。" : "VRゴーグルのブラウザーで開くと「VR」ボタンが出ます。"}</p>
+    </section>`;
 }
 
 function renderWardrobe(node, me) {
   // Keep the native picker connected while room updates refresh the wardrobe.
   if (!$("avatar-file")) {
-    node.innerHTML = `<div class="stack">
-      <p class="panel-intro">好きな姿で街へ出かけましょう。</p>
-      <div class="row resident" id="avatar-resident"><span>表示名：<strong id="avatar-name"></strong></span>
-        ${btn("変更", "rename", "button-ghost")}</div>
-      <label class="field card upload-card">アバターを読み込む
+    node.innerHTML = `<p class="lead">好きな姿で街へ出かけましょう。</p>
+      <div class="list" id="avatar-resident"><div class="list-row"><span>表示名：<strong id="avatar-name"></strong></span>
+        ${btn("変える", "rename", "ghost small")}</div></div>
+      <label class="upload">アバターを読み込む
         <input type="file" id="avatar-file" multiple aria-describedby="avatar-file-help">
         <small id="avatar-file-help">VRM・GLB・VRChat向けFBX／Unityパッケージ</small>
       </label>
-      <p class="muted">「ブラウズ」から選べます。FBXと画像はまとめて選べます。</p>
-      <div class="stack" id="avatar-controls"></div>
-    </div>`;
+      <p class="note">FBXと画像はまとめて選べます。髪やスカートなどの揺れものは、体にめり込まないよう当たり判定つきで揺れます。</p>
+      <div class="stack" id="avatar-controls"></div>`;
   }
   $("avatar-resident").hidden = !state;
   setText("avatar-name", me.name);
   $("avatar-file").disabled = vrmUploading;
   setText("avatar-file-help", vrmUploading ? "読み込み中…" : "VRM・GLB・VRChat向けFBX／Unityパッケージ");
-  $("avatar-controls").innerHTML = `${me.avatarHasAfk ? btn(me.afk ? "離席モードを解除" : "離席モードにする", "toggle-afk", "button-primary",
+  $("avatar-controls").innerHTML = `${me.avatarHasAfk ? btn(me.afk ? "離席モードを解除" : "離席モードにする", "toggle-afk", "primary block",
       `aria-pressed="${Boolean(me.afk)}" ${vrmUploading ? "disabled" : ""}`) : ""}
     ${avatarGimmicks(me)}
-    ${me.vrm ? btn("標準アバターに戻る", "remove-vrm", "button-secondary", vrmUploading ? "disabled" : "") : ""}
-    <div class="panel-section stack">
-      <p class="eyebrow">クローゼット</p>
-      ${me.owned.length ? me.owned.map(itemFor).filter(Boolean).map((item) =>
-        `<div class="row resident"><span>${escape(item.name)}</span>
+    ${me.vrm ? btn("標準アバターに戻る", "remove-vrm", "ghost block", vrmUploading ? "disabled" : "") : ""}
+    <section class="section">
+      <div class="section-title"><span>クローゼット</span></div>
+      ${me.owned.length ? `<div class="list">${me.owned.map(itemFor).filter(Boolean).map((item) =>
+        `<div class="list-row"><span>${escape(item.name)}</span>
          ${btn(me.equipped === item.id ? "外す" : "着る", me.equipped === item.id ? "unequip" : "equip",
-         "button-ghost", `data-id="${escape(item.id)}" ${compatible(item) ? "" : "disabled"}`)}</div>`
-      ).join("") : '<p class="muted">服屋で買った服がここに並びます。</p>'}
-    </div>`;
+         "ghost small", `data-id="${escape(item.id)}" ${compatible(item) ? "" : "disabled"}`)}</div>`).join("")}</div>`
+        : '<p class="empty">服屋で買った服がここに並びます。</p>'}
+    </section>`;
 }
 
 function avatarGimmicks(me) {
@@ -799,55 +977,83 @@ function avatarGimmicks(me) {
     if (!groups.has(name)) groups.set(name, []);
     groups.get(name).push(control);
   }
-  return `<div class="panel-section stack">
-    <p class="eyebrow">ギミック</p>
+  return `<section class="section">
+    <div class="section-title"><span>ギミック</span></div>
     ${[...groups].map(([name, group]) => `
-      ${name ? `<small>${escape(name)}</small>` : ""}
-      ${group.map(({ id, label, kind }) => {
-        if (kind === "slider") {
-          const amount = Math.round((Number(me.avatarExpressionValues?.[id]) || 0) * 100);
-          return `<label class="field slider-field">${escape(label)}<input type="range" min="0" max="100" value="${amount}"
-            data-slider="${escape(id)}" ${vrmUploading ? "disabled" : ""}></label>`;
-        }
+      ${name ? `<small class="note">${escape(name)}</small>` : ""}
+      <div class="chip-grid">${group.filter(({ kind }) => kind !== "slider").map(({ id, label, kind }) => {
         const on = me.avatarExpressionValues?.[id] === true;
-        const toggle = kind === "toggle";
-        return btn(escape(label), "avatar-expression", on ? "button-primary" : "button-secondary",
-          `data-id="${escape(id)}" ${toggle ? `aria-pressed="${on}"` : ""} ${vrmUploading ? "disabled" : ""}`);
+        return `<button type="button" class="chip" data-action="avatar-expression" data-id="${escape(id)}"
+          ${kind === "toggle" ? `aria-pressed="${on}"` : ""} ${vrmUploading ? "disabled" : ""}>${escape(label)}</button>`;
+      }).join("")}</div>
+      ${group.filter(({ kind }) => kind === "slider").map(({ id, label }) => {
+        const amount = Math.round((Number(me.avatarExpressionValues?.[id]) || 0) * 100);
+        return `<label class="field">${escape(label)}<input type="range" min="0" max="100" value="${amount}"
+          data-slider="${escape(id)}" ${vrmUploading ? "disabled" : ""}></label>`;
       }).join("")}
     `).join("")}
-  </div>`;
+  </section>`;
+}
+
+// ---- Dialogs ----------------------------------------------------------------------------
+
+function showDialog(html) {
+  const dialog = $("dialog");
+  $("dialog-content").innerHTML = html;
+  if (!dialog.open) dialog.showModal();
+}
+
+// Asks a question with a button for each answer: `actions` is [[id, label, look], …].
+// Resolves with the id of the button pressed, or null if the dialog was closed.
+function confirmDialog({ title, text, actions }) {
+  const dialog = $("dialog");
+  if (dialog.open) dialog.close();
+  showDialog(`<h2>${escape(title)}</h2><p>${escape(text)}</p>
+    <div class="row wrap">${actions.map(([id, label, look]) =>
+      `<button type="button" class="btn ${look}" data-answer="${escape(id)}">${escape(label)}</button>`).join("")}</div>`);
+  return new Promise((resolve) => {
+    let answer = null;
+    const pick = (event) => {
+      const button = event.target.closest("[data-answer]");
+      if (!button) return;
+      answer = button.dataset.answer;
+      dialog.close();
+    };
+    dialog.addEventListener("click", pick);
+    dialog.addEventListener("close", () => {
+      dialog.removeEventListener("click", pick);
+      resolve(answer);
+    }, { once: true });
+  });
 }
 
 function openRoomDialog() {
-  const display = $("dialog-content");
-  let code = state?.code ?? "";
+  const code = state?.code ?? "";
   const url = new URL(location.href);
   if (code) url.searchParams.set("join", code);
   if (!state) {
     // First visit or a lost session: choose the name everyone will see before entering a town.
-    display.innerHTML = `<h2>まちのとなりへようこそ</h2>
+    showDialog(`<h2>まちのとなりへようこそ</h2>
       <p>街のみんなに表示される名前を決めてください。</p>
-      <form data-form="join" class="stack">
+      <form data-form="join">
         <label class="field">表示名<input name="name" maxlength="24" required autofocus placeholder="あなたの名前"></label>
         <label class="field">招待コード<input name="code" maxlength="20" value="${escape(inviteFromUrl)}" placeholder="空欄なら新しい街をつくります"></label>
-        <button class="button button-primary" type="submit" value="start">はじめる</button>
-      </form>`;
-    if (!$("dialog").open) $("dialog").showModal();
+        <button class="btn primary block" type="submit" value="start">はじめる</button>
+      </form>`);
     return;
   }
-  display.innerHTML = `<h2>友達を街に呼ぶ</h2>
-    ${code ? `<div class="card invite-card">
-      <small>あなたの街の招待コード</small><strong>${escape(code)}</strong>
-      ${btn("招待リンクをコピー", "copy-invite", "button-primary")}
+  showDialog(`<h2>友達を街に呼ぶ</h2>
+    ${code ? `<div class="invite-card">
+      <small>この街の招待コード</small><strong>${escape(code)}</strong>
+      ${btn("招待リンクをコピー", "copy-invite", "primary")}
       <input id="invite-url" aria-label="招待リンク" readonly value="${escape(url.href)}">
     </div>` : ""}
-    <form data-form="join" class="stack">
+    <form data-form="join" style="margin-top:14px">
       <label class="field">表示名<input name="name" maxlength="24" required value="${escape(state?.me.name ?? "")}" placeholder="あなたの名前"></label>
       <label class="field">招待コード<input name="code" maxlength="20" value="${escape(inviteFromUrl)}" placeholder="友達の招待コード"></label>
-      <div class="row"><button class="button button-primary" type="submit" value="join">街に参加する</button>
-        <button class="button button-ghost" type="submit" value="new">新しい街を作る</button></div>
-    </form>`;
-  if (!$("dialog").open) $("dialog").showModal();
+      <div class="row wrap"><button class="btn primary grow" type="submit" value="join">街に参加する</button>
+        <button class="btn ghost grow" type="submit" value="new">新しい街を作る</button></div>
+    </form>`);
 }
 
 function openNameDialog() {
@@ -855,27 +1061,213 @@ function openNameDialog() {
     openRoomDialog();
     return;
   }
-  $("dialog-content").innerHTML = `<h2>表示名を変える</h2>
+  showDialog(`<h2>表示名を変える</h2>
     <p>街のみんなに表示される名前です。</p>
-    <form data-form="rename" class="stack">
+    <form data-form="rename">
       <label class="field">表示名<input name="name" maxlength="24" required autofocus value="${escape(current().name)}"></label>
-      <button class="button button-primary" type="submit">保存する</button>
-    </form>`;
-  if (!$("dialog").open) $("dialog").showModal();
+      <button class="btn primary block" type="submit">保存する</button>
+    </form>`);
   $("dialog-content").querySelector('input[name="name"]')?.select();
 }
 
+// ---- Designing a building wall by wall --------------------------------------------------
+
+// Shows the 3D view what is being drawn: the lines of the tools at once, the building itself
+// a moment after the last change (a building takes longer to put up than a line to draw).
+function pushDraft() {
+  const editor = studio?.editor;
+  if (!editor) return;
+  scene?.setSketch(editor.sketch());
+  syncVR();
+  const houseId = studio.house.id;
+  const fresh = designDraft?.houseId !== houseId;
+  if (!fresh && designDraft.stamp === editor.stamp) {
+    if (designDraft.level !== editor.level) {
+      designDraft = { ...designDraft, level: editor.level };
+      update();
+    }
+    return;
+  }
+  const apply = () => {
+    draftTimer = 0;
+    if (studio?.editor !== editor) return;
+    designDraft = { houseId, design: editor.snapshot(), stamp: editor.stamp, level: editor.level };
+    update();
+  };
+  clearTimeout(draftTimer);
+  if (fresh) apply();
+  else draftTimer = setTimeout(apply, 110);
+}
+
+function makeStudio() {
+  studio = createStudio($("studio"), {
+    onDraft: pushDraft,
+    onLayout: syncInsets,
+    notify,
+    confirm: confirmDialog,
+    // Saves the drawing; resolves with the building as the town now has it, or null.
+    async onSave(home, design) {
+      try {
+        await action("design", { houseId: home.id, design, base: home.rev ?? 0 });
+        notify("設計を保存しました。");
+        return getHouse(home.id);
+      } catch (error) {
+        console.error(error);
+        if (error.stale) {
+          await refresh().catch(() => {});
+          notify("ほかの人がこの建物を変更しました。設計を閉じて、開き直してください。");
+        } else notify(error.message === "Failed to fetch" ? "街との通信が切れました。もう一度お試しください。" : error.message);
+        return null;
+      }
+    },
+    onRevert(home) {
+      run(async () => {
+        await action("design", { houseId: home.id, design: null });
+        studio.discard();
+        notify("かんたん間取りに戻しました。");
+      });
+    },
+    onClose() {
+      clearTimeout(draftTimer);
+      designDraft = null;
+      vrPage = "home";
+      scene?.setSketch(null);
+      renderKey = "";
+      update();
+    },
+  });
+}
+
+function openStudio(id) {
+  const home = getHouse(id);
+  if (!home?.canEdit || !studio) return;
+  selectedHouse = id;
+  building = selection = null;
+  vrPage = "design";
+  studio.open(home, `${houseTitle(home)}・${STYLE_LABELS[home.style]}`);
+  // In a headset the building is designed standing in it.
+  if (scene?.vr.active()) scene.visit(id);
+  update();
+}
+
+// ---- The menu a hand holds in VR ----------------------------------------------------------
+//
+// In a headset the page cannot be seen, so the same commands are offered on a panel in the
+// town itself. This says what is on it; the 3D view draws it and tells which button was pressed.
+
+let vrPage = "home";
+let vrPalette = 0;
+const PER_PAGE = 12;
+
+function vrChoices() {
+  const editor = studio.editor;
+  const { options, tool } = editor;
+  const pick = (group, key, entries, chosen) => entries.map(([value, label]) => ({
+    label, action: "design-option", data: { group, key, value: String(value) }, active: String(chosen) === String(value),
+  }));
+  const finishes = (groups) => Object.entries(FINISHES).filter(([, finish]) => groups.includes(finish.group)).map(([id, finish]) => [id, finish.label]);
+  if (tool === "wall") return { label: "壁の種類と外側の仕上げ", buttons: [...pick("wall", "kind", Object.entries(WALL_KINDS), options.wall.kind), ...pick("wall", "out", finishes(["wall"]), options.wall.out)] };
+  if (tool === "opening") return { label: "扉・窓の種類", buttons: pick("opening", "k", Object.entries(OPENINGS).filter(([id]) => id !== "lift-door").map(([id, kind]) => [id, kind.label]), options.opening.k) };
+  if (tool === "item") return { label: "家具の種類", buttons: pick("item", "k", Object.entries(ITEMS).map(([id, kind]) => [id, `${ITEM_GROUPS[kind.group]?.[0] ?? ""}｜${kind.label}`]), options.item.k) };
+  if (tool === "paint") return { label: "仕上げ", buttons: pick("paint", "f", finishes(["paper", "wall", "floor", "ceiling", "roof"]), options.paint.f) };
+  if (tool === "decor") return { label: "壁掛けの種類", buttons: pick("decor", "k", Object.entries(WALL_DECOR).map(([id, kind]) => [id, kind.label]), options.decor.k) };
+  if (tool === "stair") return { label: "階段の形", buttons: [...pick("stair", "shape", [["path", "直線・折れ"], ["spiral", "らせん"]], options.stair.shape), ...pick("stair", "turn", [["landing", "踊り場で曲がる"], ["winder", "回り段で曲がる"]], options.stair.turn)] };
+  if (tool === "lift") return { label: "扉の向き", buttons: pick("lift", "r", [[0, "南"], [90, "東"], [180, "北"], [270, "西"]], options.lift.r) };
+  return null;
+}
+
+function vrMenu() {
+  const me = current();
+  if (designing()) {
+    const editor = studio.editor;
+    const choices = vrChoices();
+    const sections = [
+      { label: "道具", columns: 5, buttons: Object.entries(TOOLS).map(([id, label]) => ({ label, action: "design-tool", data: { id }, active: editor.tool === id })) },
+    ];
+    if (choices) {
+      const pages = Math.max(1, Math.ceil(choices.buttons.length / PER_PAGE));
+      vrPalette = Math.min(vrPalette, pages - 1);
+      sections.push({
+        label: pages > 1 ? `${choices.label}（${vrPalette + 1}/${pages}）` : choices.label, columns: 3,
+        buttons: [...choices.buttons.slice(vrPalette * PER_PAGE, (vrPalette + 1) * PER_PAGE),
+          ...(pages > 1 ? [{ label: "◀ 前", action: "vr-palette", data: { id: "-1" }, disabled: vrPalette === 0 }, { label: "次 ▶", action: "vr-palette", data: { id: "1" }, disabled: vrPalette >= pages - 1 }] : [])],
+      });
+    }
+    sections.push({
+      label: "編集", columns: 4, buttons: [
+        { label: "元に戻す", action: "design-undo", disabled: !editor.canUndo() },
+        { label: "やり直す", action: "design-redo", disabled: !editor.canRedo() },
+        { label: "回す", action: "design-rotate" },
+        { label: "選択を消す", action: "design-remove", disabled: !editor.selection || editor.selection.type === "room" },
+        ...(editor.draft ? [{ label: "線を確定", action: "design-commit", active: true }] : []),
+      ],
+    }, {
+      label: `階（いま${editor.level + 1}階／${editor.design.storeys.length}階建て）`, columns: 4, buttons: [
+        { label: "▲ 上の階", action: "design-level", data: { id: "1" }, disabled: editor.level + 1 >= editor.design.storeys.length },
+        { label: "▼ 下の階", action: "design-level", data: { id: "-1" }, disabled: editor.level === 0 },
+        { label: "階を増やす", action: "design-add-storey", disabled: editor.design.storeys.length >= editor.most },
+        ...(editor.editable ? [] : [{ label: "この階だけ変える", action: "design-materialize" }]),
+      ],
+    }, {
+      label: "設計", columns: 2, buttons: [
+        { label: editor.dirty ? "保存する" : "保存済み", action: "design-save", disabled: !editor.dirty, active: editor.dirty },
+        { label: "設計を終える", action: "design-close" },
+      ],
+    });
+    return { title: "設計スタジオ", subtitle: studio.house ? houseTitle(studio.house) : "", hint: "トリガーで床を指して描きます。グリップで階を移動します。", sections };
+  }
+  const here = getHouse(place?.id);
+  const mine = (state?.houses ?? []).filter((house) => house.canEdit).slice(0, 4);
+  const sections = [];
+  const spot = [];
+  if (door) {
+    spot.push({ label: door.open ? "扉を閉める" : door.locked && !door.key ? "鍵がかかっています" : "扉を開ける", action: "use-door", disabled: !door.open && door.locked && !door.key });
+    if (door.lock && door.key) spot.push({ label: door.locked ? "鍵を開ける" : "鍵をかける", action: "use-lock" });
+  }
+  if (lift) spot.push(...lift.levels.map((level) => ({ label: `${level + 1}階へ`, action: "ride", data: { id: String(level) }, active: (lift.target ?? lift.level) === level, disabled: lift.level === null })));
+  else if (place && place.levels > 1) {
+    spot.push({ label: "▲ 上の階", action: "floor", data: { id: "1" }, disabled: place.level + 1 >= place.levels },
+      { label: "▼ 下の階", action: "floor", data: { id: "-1" }, disabled: place.level === 0 });
+  }
+  if (place) spot.push({ label: "外に出る", action: "leave-home" });
+  if (spot.length) sections.push({ label: ride ? `その場で｜${ride.text}` : "その場で", columns: 3, buttons: spot });
+  sections.push({
+    label: "行き先", columns: 3, buttons: [
+      { label: "広場へ", action: "go-plaza" }, { label: "服屋へ", action: "open-shop" },
+      ...mine.slice(0, 1).map((house) => ({ label: `${kinds[house.kind]}へ`, action: "enter-home", data: { id: house.id } })),
+    ],
+  });
+  const designs = here?.canEdit ? [here] : mine;
+  if (designs.length) {
+    sections.push({ label: "家を設計する", columns: 2, buttons: designs.map((house) => ({ label: `${houseTitle(house)}を設計`, action: "design-home", data: { id: house.id } })) });
+  }
+  sections.push({
+    label: "そのほか", columns: 3, buttons: [
+      { label: voice.enabled() ? "マイクを切る" : "マイクを入れる", action: "mic", active: voice.enabled() },
+      { label: transitPreview ? "モノレール試運転をやめる" : "モノレール試運転", action: "toggle-transit", active: transitPreview },
+      { label: "VRを終える", action: "vr" },
+    ],
+  });
+  return { title: "まちのとなり", subtitle: `${me.name}｜${fmt(me.coins)}コイン`, hint: "トリガーで指した場所へ移動します。A・B・X・Yでメニューを開閉します。", sections };
+}
+
+function syncVR() {
+  if (scene?.vr.active() && scene.vr.setMenu) scene.vr.setMenu(vrMenu());
+}
+
+// ---- Walking about the town -----------------------------------------------------------
+
 function openShop() {
   scene?.visit("shop", { inside: true });
-  setTab("shop");
+  openPanel("shop", panelOpen || !narrow());
 }
 
 // The 3D view reports walking into a building, out of it, or to another storey.
 function enterPlace(next) {
   const before = place;
   place = next;
-  if (inShop() && before?.kind !== "shop") setTab("shop");
-  else if (!inShop() && before?.kind === "shop" && activeTab === "shop") setTab("guide");
+  if (inShop() && before?.kind !== "shop") openPanel("shop", !narrow());
+  else if (!inShop() && before?.kind === "shop" && activeTab === "shop") openPanel("guide", panelOpen);
   else {
     if (next && getHouse(next.id)) selectedHouse = next.id;
     update();
@@ -897,7 +1289,7 @@ function clickTarget(target, exact, byHand = false) {
   }
   if (building) {
     clickTile({ x, z }, exact);
-  } else if (kind === "shop" || kind === "cafe") {
+  } else if (kind === "shop" || kind === "cafe" || kind === "station") {
     // A hand in VR points and arrives; everyone else walks up to the door and in.
     if (byHand) scene?.visit(id);
     else scene?.walkInto(id);
@@ -906,7 +1298,7 @@ function clickTarget(target, exact, byHand = false) {
     planFloor = 0;
     if (byHand) scene?.visit(id);
     else scene?.walkInto(id);
-    if (!direct) setTab("home");
+    if (!direct && !narrow()) openPanel("home", panelOpen);
   } else {
     clickTile({ x, z }, exact, byHand);
   }
@@ -921,8 +1313,14 @@ function clickTile({ x, z }, exact, byHand = false) {
       selectedHouse = state.houses.find((home) => !before.has(home.id))?.id ?? null;
       planFloor = 0;
       building = null;
-      notify(`${STYLE_LABELS[plan.style]}が建ちました。間取りを変えてみましょう。`);
-      update();
+      // A bare lot is there to be drawn on: the studio opens on it at once.
+      if (plan.style === "brutal" && selectedHouse && !scene?.vr.active()) {
+        notify("更地を用意しました。壁を引いて、建物を設計しましょう。");
+        openStudio(selectedHouse);
+      } else {
+        notify(`${STYLE_LABELS[plan.style]}が建ちました。「設計する」で壁一枚から作り変えられます。`);
+        openPanel("home", panelOpen || !narrow());
+      }
     });
   } else if (activeTab === "edit" && canEdit()) {
     if (!selection) {
@@ -966,8 +1364,8 @@ async function run(task) {
 
 // Buildings are walked into; these buttons only save the walk.
 function enterHome(id) {
-  if (!getHouse(id)?.canEnter) throw new Error("この家には、招待された人だけが入れます。");
-  if (scene?.visit(id, { inside: true })) selectedHouse = id;
+  // To the front door: it is opened by hand, by whoever has its key or finds it unlocked.
+  if (scene?.visit(id)) selectedHouse = id;
 }
 
 function leaveHome() {
@@ -980,11 +1378,10 @@ async function editTown(args, type = "town") {
   } catch (error) {
     if (!error.needsConfirmation) throw error;
     pendingTownEdit = { type, args };
-    $("dialog-content").innerHTML = `<h2>道路のつながりを確認</h2>
+    showDialog(`<h2>道路のつながりを確認</h2>
       ${error.warnings.map((warning) => `<p>${escape(warning)}</p>`).join("")}
-      <div class="row">${btn("この配置で保存", "confirm-town", "button-primary")}
-      ${btn("戻る", "close-dialog", "button-ghost")}</div>`;
-    $("dialog").showModal();
+      <div class="row wrap">${btn("この配置で保存", "confirm-town", "primary")}
+      ${btn("戻る", "close-dialog", "ghost")}</div>`);
     return;
   }
   selection = null;
@@ -1006,6 +1403,8 @@ async function changeMic() {
     update();
   }
 }
+
+// ---- Bringing an avatar ---------------------------------------------------------------
 
 function sendAvatarPart(path, body, { session, signal }, onProgress) {
   return new Promise((resolve, reject) => {
@@ -1068,14 +1467,13 @@ async function uploadAvatar(file, format, { id, session, signal }, onProgress) {
 function chooseAvatarModel(paths) {
   const dialog = $("dialog");
   if (dialog.open) dialog.close();
-  $("dialog-content").innerHTML = `<h2>アバターのモデルを選ぶ</h2>
-    <form class="stack" id="avatar-model-form">
+  showDialog(`<h2>アバターのモデルを選ぶ</h2>
+    <form id="avatar-model-form">
       <label class="field">モデルのファイル<select name="model">
         ${paths.map((path) => `<option value="${escape(path)}">${escape(path)}</option>`).join("")}
       </select></label>
-      <button class="button button-primary" type="submit">このモデルを読み込む</button>
-    </form>`;
-  dialog.showModal();
+      <button class="btn primary block" type="submit">このモデルを読み込む</button>
+    </form>`);
   return new Promise((resolve) => {
     const form = $("avatar-model-form");
     let selected = null;
@@ -1099,7 +1497,7 @@ function chooseFbxOptions({ parts, materialOptions, imagePaths }) {
   const imageOptions = (selected) => '<option value="">元の材質設定を使う</option>' +
     choices.map((path) => `<option value="${escape(path)}" ${path === selected ? "selected" : ""}>${escape(path)}</option>`).join("");
 
-  $("dialog-content").innerHTML = `<h2>FBXの読み込み設定</h2>
+  showDialog(`<h2>FBXの読み込み設定</h2>
     <form id="fbx-options">
       ${materialOptions.length ? `<fieldset class="stack"><legend>テクスチャ</legend>
         <label class="field">画像を追加<input id="fbx-images" type="file" multiple accept=".png,.jpg,.jpeg,.webp,.bmp,.gif"></label>
@@ -1113,10 +1511,9 @@ function chooseFbxOptions({ parts, materialOptions, imagePaths }) {
               `<option value="${value}" ${value === mode ? "selected" : ""}>${label}</option>`).join("")}
           </select></label>`).join("")}
       </fieldset>
-      <p id="fbx-options-error" class="muted" role="alert" hidden></p>
-      <button type="submit" class="button button-primary">この設定で読み込む</button>
-    </form>`;
-  dialog.showModal();
+      <p id="fbx-options-error" class="note warn" role="alert" hidden></p>
+      <button type="submit" class="btn primary block">この設定で読み込む</button>
+    </form>`);
   const form = $("fbx-options");
   $("fbx-images")?.addEventListener("change", (event) => {
     for (const file of event.target.files) {
@@ -1169,7 +1566,7 @@ async function importAvatar(files) {
   update();
   try {
     load("ファイルを確認中");
-    const { prepareAvatar } = await import("./avatar-import.js");
+    const { prepareAvatar } = await import("./avatar-import.js?v=online-1794946480502");
     const model = await prepareAvatar(files, chooseAvatarModel, load, chooseFbxOptions);
     if (!model || generation !== sessionGeneration) return;
     url = URL.createObjectURL(model.blob);
@@ -1210,9 +1607,21 @@ function refresh() {
   return promise;
 }
 
+// ---- Commands ---------------------------------------------------------------------------
+//
+// Every button of the page says what it does with `data-action`; the menu a hand holds in VR
+// sends the same names. `data` is whatever else the button carries (its `data-…` values).
+
+const typed = (value) => (/^-?\d+(\.\d+)?$/.test(value) ? Number(value) : value);
+
 const handlers = {
   room: openRoomDialog,
   rename: openNameDialog,
+  people: () => openPanel("guide"),
+  "close-panel": () => {
+    panelOpen = false;
+    update();
+  },
   "toggle-afk": () => action("afk", { enabled: !current().afk }),
   "avatar-expression": ({ id }) => {
     const me = current();
@@ -1240,23 +1649,28 @@ const handlers = {
   silence: ({ id }) => { voice.togglePlayer(id); update(); },
   "open-shop": openShop,
   "leave-shop": () => { scene?.visit("shop"); },
-  "open-homes": () => setTab("home"),
+  "open-homes": () => openPanel("home"),
   "home-detail": ({ id }) => { selectedHouse = selectedHouse === id ? null : id; planFloor = 0; update(); },
+  "design-home": ({ id }) => openStudio(id),
   "cancel-build": () => { building = null; update(); },
   "plan-floor": ({ id }) => { planFloor = Number(id); update(); },
   brush: ({ id }) => { brush = id; update(); },
   "reset-plan": async ({ id }) => {
+    const answer = await confirmDialog({
+      title: "標準の間取りに戻す", text: "いまの間取り（詳細設計を含む）を捨てて、この様式の標準の間取りに戻します。",
+      actions: [["reset", "戻す", "danger"], ["cancel", "やめる", "ghost"]],
+    });
+    if (answer !== "reset") return;
     await action("remodel", { houseId: id, reset: true });
     notify("標準の間取りに戻しました。");
   },
   demolish: ({ id }) => {
     const home = getHouse(id);
     if (!home) return;
-    $("dialog-content").innerHTML = `<h2>建物を取り壊す</h2>
+    showDialog(`<h2>建物を取り壊す</h2>
       <p>${escape(houseTitle(home))}（${STYLE_LABELS[home.style]}）を取り壊します。間取りも消え、元には戻せません。</p>
-      <div class="row">${btn("取り壊す", "confirm-demolish", "button-primary", `data-id="${escape(id)}"`)}
-      ${btn("やめる", "close-dialog", "button-ghost")}</div>`;
-    $("dialog").showModal();
+      <div class="row wrap">${btn("取り壊す", "confirm-demolish", "danger", `data-id="${escape(id)}"`)}
+      ${btn("やめる", "close-dialog", "ghost")}</div>`);
   },
   "confirm-demolish": async ({ id }) => {
     await action("demolish", { houseId: id });
@@ -1274,6 +1688,9 @@ const handlers = {
     if (id === "first") notify(matchMedia("(pointer: coarse)").matches ? "画面をなぞると見回せます。" : "画面をクリックすると、マウスで見回せます（Escで解除）。");
   },
   floor: ({ id }) => { scene?.changeLevel(Number(id)); },
+  ride: ({ id }) => { scene?.rideTo(Number(id)); },
+  "use-door": () => { scene?.useDoor(); },
+  "use-lock": () => { scene?.useLock(); },
   vr: async () => {
     if (!scene) return;
     if (scene.vr.active()) scene.vr.exit();
@@ -1281,10 +1698,7 @@ const handlers = {
   },
   "enter-home": ({ id }) => enterHome(id),
   "leave-home": leaveHome,
-  "invite-home": async ({ id, player, allowed }) => {
-    await action("invite", { houseId: id, playerId: player, allowed: allowed === "true" });
-    notify(allowed === "true" ? "入室できるようになりました。" : "招待を取り消しました。");
-  },
+  "go-plaza": () => { scene?.teleport(town().plaza.x + 0.42, town().plaza.z + 0.42); },
   "select-shop": () => { selection = { target: "shop", from: town().shop }; update(); },
   "select-cafe": () => { selection = { target: "cafe", from: town().cafe }; update(); },
   "add-road": () => { selection = { target: "road" }; update(); },
@@ -1299,6 +1713,7 @@ const handlers = {
     $("dialog").close();
   },
   "cancel-edit": () => { selection = null; update(); },
+  "end-edit": () => openPanel("guide", panelOpen && !narrow()),
   "editor-role": ({ id, allowed }) => action("editor", { playerId: id, allowed: allowed === "true" }),
   undo: () => editTown({}, "undo"),
   try: ({ id }) => {
@@ -1332,20 +1747,49 @@ const handlers = {
     viewMode = viewMode === "overview" ? "follow" : "overview";
     update();
   },
-  "toggle-panel": () => {
-    const collapsed = $("panel")?.classList.toggle("is-collapsed");
-    $("panel-toggle")?.setAttribute("aria-expanded", String(!collapsed));
+  quality: ({ id }) => {
+    scene?.setQuality(id);
+    localStorage.setItem(qualityKey, id);
+    update();
   },
+  "toggle-transit": () => {
+    transitPreview = !transitPreview;
+    update();
+    notify(transitPreview ? "モノレールの試運転を始めました（この画面だけに表示されます）。" : "モノレールの試運転をやめました。");
+  },
+  // The design tools, as the menu in VR works them.
+  "design-tool": ({ id }) => {
+    vrPalette = 0;
+    studio.editor?.setTool(id);
+  },
+  "design-option": ({ group, key, value }) => studio.editor?.setOption(group, { [key]: typed(value) }),
+  "design-undo": () => studio.editor?.undo(),
+  "design-redo": () => studio.editor?.redo(),
+  "design-rotate": () => studio.editor?.rotate(90),
+  "design-remove": () => studio.editor?.remove(),
+  "design-commit": () => studio.editor?.commitDraft(),
+  "design-level": ({ id }) => studio.editor?.setLevel(studio.editor.level + Number(id)),
+  "design-add-storey": () => {
+    const editor = studio.editor;
+    if (editor?.addStorey()) editor.setLevel(editor.design.storeys.length - 1);
+  },
+  "design-materialize": () => studio.editor?.materialize(),
+  "design-save": () => studio.save(),
+  // (In a headset nobody sees a question on the page: leaving the studio there saves first.)
+  "design-close": async () => {
+    if (!scene?.vr.active()) await studio.close();
+    else if (!studio.editor?.dirty || await studio.save()) studio.discard();
+  },
+  "vr-palette": ({ id }) => { vrPalette = Math.max(0, vrPalette + Number(id)); },
 };
 
 document.addEventListener("click", (event) => {
-  const control = event.target.closest("[data-action], [data-tab]");
-  if (!control) return;
+  const control = event.target.closest("[data-action], #dock [data-tab]");
+  if (!control || control.disabled) return;
   if (control.dataset.tab) {
-    // Choosing a tab opens the menu if it was folded away.
-    $("panel")?.classList.remove("is-collapsed");
-    $("panel-toggle")?.setAttribute("aria-expanded", "true");
-    setTab(control.dataset.tab);
+    // The button of the open drawer closes it; any other opens its own.
+    if (panelOpen && activeTab === control.dataset.tab) handlers["close-panel"]();
+    else openPanel(control.dataset.tab);
   } else if (handlers[control.dataset.action]) run(() => handlers[control.dataset.action](control.dataset));
 });
 
@@ -1447,6 +1891,7 @@ document.addEventListener("submit", (event) => {
       if (!creating && !code) throw new Error("招待コードを入力してください。");
       if (!creating && token && state?.code === code) { $("dialog").close(); return; }
       const name = String(data.get("name")).trim();
+      if (designing()) studio.discard();
       const result = await join(name, creating ? "" : code);
       if (!result) return;
       // Rejoining a town restores the earlier resident, so apply the name typed in the form.
@@ -1465,13 +1910,16 @@ document.addEventListener("submit", (event) => {
     buildChoice = { kind: data.get("kind"), style: data.get("style"), size: data.get("size") };
     building = { kind: buildChoice.kind, style: buildChoice.style, w, d };
     selectedHouse = null;
+    // On a phone the drawer steps aside, so that the town can be seen and touched.
+    if (narrow()) panelOpen = false;
     update();
-    notify("建てる場所を地図から選んでください。");
+    notify("建てる場所を、街の空き地から選んでください。");
   }
 });
 
 document.addEventListener("change", (event) => {
   const control = event.target;
+  if (control.closest("#studio")) return;
   if (control.id === "avatar-file" && control.files.length) {
     const files = Array.from(control.files);
     control.value = "";
@@ -1480,10 +1928,19 @@ document.addEventListener("change", (event) => {
     run(() => action("expression", {
       id: control.dataset.slider, revision: current().vrm, value: Number(control.value) / 100,
     }));
-  } else if (control.dataset.setting === "quality") {
-    scene?.setQuality(control.value);
-    localStorage.setItem(qualityKey, control.value);
+  } else if (control.dataset.setting === "sound" || control.dataset.setting === "voice") {
+    settings[control.dataset.setting] = control.checked;
+    localStorage.setItem(settingsKey, JSON.stringify(settings));
+    scene?.setSound?.(settings);
     update();
+  } else if (control.dataset.setting === "key") {
+    run(async () => {
+      await action("key", { houseId: control.dataset.id, playerId: control.dataset.player, lock: control.value || null });
+      notify(control.value ? "鍵を渡しました。" : "鍵を返してもらいました。");
+    }).finally(() => {
+      renderKey = "";
+      update();
+    });
   } else if (control.dataset.setting === "style" || control.dataset.setting === "floors") {
     const value = control.dataset.setting === "floors" ? Number(control.value) : control.value;
     run(() => action("remodel", { houseId: control.dataset.id, [control.dataset.setting]: value })).finally(() => {
@@ -1498,11 +1955,11 @@ document.addEventListener("change", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
-  if (event.target.closest("input, textarea, select") || $("dialog").open) return;
+  if (event.target.closest("input, textarea, select") || $("dialog").open || designing()) return;
   if (event.key === "Escape") {
     if (building || selection) { building = selection = null; update(); }
     else if (preview) { preview = null; update(); }
-  } else if (event.key.toLowerCase() === "v") {
+  } else if (event.key.toLowerCase() === "v" && !event.ctrlKey && !event.metaKey) {
     // V flips between walking behind the avatar and seeing through its eyes.
     handlers.view({ id: viewMode === "first" ? "follow" : "first" });
   } else if (event.key === "PageUp" || event.key === "PageDown") {
@@ -1515,13 +1972,19 @@ $("dialog").addEventListener("close", () => {
   if (!token && !joining) notify("「接続」から名前を決めて街に入れます。");
 });
 
+let wasNarrow = narrow();
+window.addEventListener("resize", () => {
+  // Turning a phone, or pulling a window narrow: the drawer keeps out of the way of the town.
+  if (narrow() !== wasNarrow) {
+    wasNarrow = narrow();
+    if (wasNarrow) panelOpen = false;
+    update();
+  } else syncInsets();
+});
+
 async function boot() {
-  // On a phone the town comes first; the menu opens from the tabs.
-  if (matchMedia("(max-width: 540px)").matches) {
-    $("panel")?.classList.add("is-collapsed");
-    $("panel-toggle")?.setAttribute("aria-expanded", "false");
-  }
   makeScene();
+  makeStudio();
   update();
   try {
     if (token) {

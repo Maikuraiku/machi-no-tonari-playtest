@@ -3,7 +3,7 @@
 // set: colour, the relief of its surface (as a normal map, with the height kept for parallax),
 // and how rough and how shaded each spot is.
 import * as THREE from 'three'
-import { CELL, CELLS, FINISHES, FRAME_COLORS, TILE, hash } from './design.js'
+import { CELL, CELLS, FINISHES, FRAME_COLORS, TILE, hash } from './design.js?v=online-1794946480502'
 
 export { CELL, CELLS, TILE, hash }
 
@@ -142,6 +142,29 @@ export class Batch {
     return this
   }
 
+  // A bar of rectangular section from one point to another, at any slope: `width` across,
+  // `height` the other way (upwards, for a bar that lies level).
+  bar(material, a, b, width, height = width) {
+    const along = b.clone().sub(a)
+    const length = along.length()
+    if (length < 1e-5) return this
+    along.divideScalar(length)
+    const side = new THREE.Vector3().crossVectors(along, up)
+    if (side.lengthSq() < 1e-8) side.set(1, 0, 0)
+    side.normalize().multiplyScalar(width / 2)
+    const rise = new THREE.Vector3().crossVectors(side, along).normalize().multiplyScalar(height / 2)
+    const ring = (end) => [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([s, u]) => end.clone().addScaledVector(side, s).addScaledVector(rise, u))
+    const p = ring(a)
+    const q = ring(b)
+    for (let index = 0; index < 4; index++) {
+      const next = (index + 1) % 4
+      this.quad(material, p[index], p[next], q[next], q[index], p[index].clone().add(p[next]).multiplyScalar(0.5).sub(a))
+    }
+    this.quad(material, p[0], p[1], p[2], p[3], along.clone().negate())
+    this.quad(material, q[0], q[1], q[2], q[3], along)
+    return this
+  }
+
   // A flat panel lying on the ground plane at height y.
   slab(material, x0, z0, x1, z1, y) {
     this.face(material, [
@@ -170,10 +193,12 @@ export class Batch {
     return [...this.parts.values()].every((part) => !part.indices.length)
   }
 
-  build(parent, { cast = true, receive = true } = {}) {
+  // `where` says where the faces stand: 'out' in the weather, 'in' in the light of a room.
+  build(parent, { cast = true, receive = true, where = '' } = {}) {
     const meshes = []
-    for (const [material, part] of this.parts) {
+    for (const [paint, part] of this.parts) {
       if (!part.indices.length) continue
+      const material = placed(paint, where)
       const geometry = new THREE.BufferGeometry()
       geometry.setAttribute('position', new THREE.Float32BufferAttribute(part.positions, 3))
       geometry.setAttribute('normal', new THREE.Float32BufferAttribute(part.normals, 3))
@@ -186,6 +211,102 @@ export class Batch {
       meshes.push(mesh)
     }
     return meshes
+  }
+}
+
+// ---- Shade where surfaces meet ----------------------------------------------------
+//
+// Where a wall meets a floor, in the corner of a room, under a cupboard and round the foot of
+// a building, less of the light of the sky arrives. Without that shade things look as if they
+// floated, or were made of paper. It is drawn as strips laid on the surfaces: dark along the
+// edge where two surfaces meet and fading to nothing a little way off.
+const shadeMaterial = new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false, side: THREE.DoubleSide,
+  polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+  vertexShader: /* glsl */`
+    attribute float shade;
+    varying float vShade;
+    void main() {
+      vShade = shade;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+    }`,
+  fragmentShader: /* glsl */`
+    varying float vShade;
+    void main() {
+      gl_FragColor = vec4( 0.0, 0.0, 0.0, vShade * vShade );
+    }`,
+})
+
+export class Shade {
+  constructor() {
+    this.positions = []
+    this.shades = []
+    this.indices = []
+  }
+
+  // A strip that is dark (from 0 to 1) along the edge from a to b and clear along the edge
+  // from c to d; c lies across from b, and d across from a.
+  strip(a, b, c, d, dark, clear = 0) {
+    const start = this.positions.length / 3
+    for (const [point, level] of [[a, dark], [b, dark], [c, clear], [d, clear]]) {
+      this.positions.push(point.x, point.y, point.z)
+      this.shades.push(Math.sqrt(Math.max(0, level)))
+    }
+    this.indices.push(start, start + 1, start + 2, start, start + 2, start + 3)
+    return this
+  }
+
+  // Shade on a level surface round something that stands on it: dark at `inner` from (x, z)
+  // and clear at `outer`.
+  ring(x, y, z, inner, outer, dark, sides = 14) {
+    const start = this.positions.length / 3
+    for (let index = 0; index < sides; index++) {
+      const angle = index / sides * Math.PI * 2
+      for (const [radius, level] of [[inner, dark], [outer, 0]]) {
+        this.positions.push(x + Math.cos(angle) * radius, y, z + Math.sin(angle) * radius)
+        this.shades.push(Math.sqrt(level))
+      }
+      const here = start + index * 2
+      const next = start + (index + 1) % sides * 2
+      this.indices.push(here, next, next + 1, here, next + 1, here + 1)
+    }
+    return this
+  }
+
+  // Shade on a level surface round a box that stands on it (its middle, its size, its turn).
+  around(x, y, z, width, depth, turn, reach, dark, fill = 0) {
+    const cos = Math.cos(turn)
+    const sin = Math.sin(turn)
+    const corner = (dx, dz, out) => {
+      const px = dx * (width / 2 + out)
+      const pz = dz * (depth / 2 + out)
+      return new THREE.Vector3(x + px * cos + pz * sin, y, z - px * sin + pz * cos)
+    }
+    const round = [[-1, -1], [1, -1], [1, 1], [-1, 1]]
+    // (Under a table or a car, which stand on legs or wheels, the floor itself is in shade.)
+    if (fill > 0) this.strip(corner(-1, -1, 0), corner(1, -1, 0), corner(1, 1, 0), corner(-1, 1, 0), fill, fill)
+    round.forEach(([dx, dz], index) => {
+      const [ex, ez] = round[(index + 1) % 4]
+      this.strip(corner(dx, dz, 0), corner(ex, ez, 0), corner(ex, ez, reach), corner(dx, dz, reach), dark)
+    })
+    return this
+  }
+
+  get empty() {
+    return !this.indices.length
+  }
+
+  build(parent) {
+    if (!this.indices.length) return null
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(this.positions, 3))
+    geometry.setAttribute('shade', new THREE.Float32BufferAttribute(this.shades, 1))
+    geometry.setIndex(this.indices)
+    const mesh = new THREE.Mesh(geometry, shadeMaterial)
+    // Drawn straight after the solid surfaces it lies on, before any glass in front of it.
+    mesh.renderOrder = -1
+    parent.add(mesh)
+    return mesh
   }
 }
 
@@ -716,6 +837,33 @@ const TEXTURES = {
     p.fill('#77746c', 0.1).speckle(900, [2, 5], ['#b9b5aa', '#9e9a90', '#c9c5ba', '#8a877e', '#a8a094'], (roll) => 0.5 + roll * 0.5)
       .noise({ cells: 80, octaves: 1, colour: 12, height: 0.1, seed: 55 })
   } },
+  // Hollow concrete blocks (390 x 190 mm) laid with 10 mm joints: four to a course, eight courses.
+  cblock: { size: 512, metres: 1.6, depth: 0.006, rough: [0.98, 0.9], relief: true, paint(p) {
+    courses(p, 4, 8, { joint: '#a7a59d', jointLevel: 0.25, gap: 3, tone: 12, bevel: 1, level: 0.86,
+      palette: [[176, 174, 167], [168, 167, 161], [184, 182, 175], [162, 161, 156], [172, 168, 160]] })
+    p.speckle(900, [0.4, 1.4], ['rgba(70,70,66,0.35)', 'rgba(210,208,200,0.25)'], 0.7)
+      .noise({ cells: 40, octaves: 2, colour: 12, height: 0.2, seed: 61 }).noise({ cells: 3, octaves: 3, colour: 14, seed: 62, tint: [1, 1, 0.9] })
+  } },
+  // A clipped hedge: small leaves packed close, darker and deeper in the gaps between them.
+  hedge: { size: 512, metres: 1.2, depth: 0.05, rough: [0.95, 0.7], relief: true, paint(p) {
+    const { size } = p
+    p.fill('#22381c', 0.15)
+    const greens = [[78, 112, 52], [92, 128, 60], [64, 98, 44], [104, 136, 66], [58, 86, 40], [118, 146, 70]]
+    for (let leaf = 0; leaf < 3400; leaf++) {
+      const x = p.roll() * size
+      const y = p.roll() * size
+      const long = 5 + p.roll() * 7
+      const turn = p.roll() * Math.PI
+      const [red, green, blue] = greens[Math.floor(p.roll() * greens.length)]
+      const light = 0.8 + p.roll() * 0.4
+      p.both(`rgb(${Math.round(red * light)},${Math.round(green * light)},${Math.round(blue * light)})`, 0.45 + p.roll() * 0.55, (context) => {
+        context.beginPath()
+        context.ellipse(x, y, long, long * 0.45, turn, 0, Math.PI * 2)
+        context.fill()
+      })
+    }
+    p.noise({ cells: 6, octaves: 3, colour: 26, height: 0.35, seed: 63 }).noise({ cells: 2, octaves: 2, colour: 14, seed: 64, tint: [1, 1, 0.6] })
+  } },
   bark: { size: 256, metres: 1, depth: 0.03, rough: [1, 0.9], relief: true, paint(p) {
     p.fill('#6f5d4b').noise({ cells: 16, cellsY: 2, octaves: 3, colour: 60, height: 0.9, seed: 56, ridge: true })
       .noise({ cells: 60, cellsY: 20, octaves: 2, colour: 20, height: 0.15, seed: 57 }).noise({ cells: 3, octaves: 2, colour: 16, seed: 58, tint: [0.6, 1, 0.6] })
@@ -747,68 +895,178 @@ function textureSet(name) {
 // The colour picture of a painted material.
 export const texture = (name) => textureSet(name).map
 
-// Lets the eye see into the relief of a surface: the texture is looked up where the line of
-// sight really meets the bumps, a few steps below the flat face. Only near the camera.
-function parallax(material, depth) {
-  material.userData.parallax = { value: depth }
-  material.onBeforeCompile = (shader) => {
-    shader.uniforms.parallaxDepth = material.userData.parallax
+// ---- How painted surfaces take the light ------------------------------------------
+//
+// Every painted material is drawn by the standard shader with a few additions:
+//  - parallax: the eye sees into the relief of a deep surface (near the camera only);
+//  - unevenness: no real wall is one colour all over. Broad blotches, smaller patches and,
+//    close by, a fine grain vary its colour and its gloss;
+//  - weather, on what stands outdoors: dirt splashed up at the foot of walls, streaks where
+//    rain runs down them, dust and moss gathering on what faces the sky;
+//  - room light, on what is indoors: the light of the sky reaches it only through windows and
+//    off the walls, the floor and the ceiling, so it comes from all round, about evenly, and
+//    has lost its blue; and a glossy floor mirrors the room rather than the open sky.
+
+// The light that fills a room, as it falls on every surface in it.
+const roomLight = { value: new THREE.Vector3(1.32, 1.27, 1.17) }
+
+const SURFACE_PARS = /* glsl */`
+  uniform float parallaxDepth;
+  uniform vec3 machiRoom;
+  varying vec3 vMachiWorld;
+
+  #ifndef USE_NORMALMAP_TANGENTSPACE
+  vec2 parallaxShift() { return vec2( 0.0 ); }
+  #else
+  // The texture is looked up where the line of sight really meets the bumps, a few steps
+  // below the flat face.
+  vec2 parallaxShift() {
+    float distance = length( vViewPosition );
+    float reach = parallaxDepth * ( 1.0 - smoothstep( 9.0, 22.0, distance ) );
+    if ( reach <= 0.0 ) return vec2( 0.0 );
+    vec3 facing = normalize( vNormal );
+    #ifdef DOUBLE_SIDED
+      facing *= gl_FrontFacing ? 1.0 : - 1.0;
+    #endif
+    mat3 frame = getTangentFrame( - vViewPosition, facing, vNormalMapUv );
+    vec3 eye = normalize( vViewPosition );
+    vec3 sight = vec3( dot( eye, frame[ 0 ] ), dot( eye, frame[ 1 ] ), max( dot( eye, frame[ 2 ] ), 0.22 ) );
+    vec2 ddx = dFdx( vNormalMapUv );
+    vec2 ddy = dFdy( vNormalMapUv );
+    const float steps = 12.0;
+    vec2 stride = - sight.xy / sight.z * reach / steps;
+    vec2 at = vNormalMapUv;
+    float sunk = 0.0;
+    float floorAt = 1.0 - textureGrad( normalMap, at, ddx, ddy ).a;
+    float before = 0.0;
+    for ( int index = 0; index < 12; index ++ ) {
+      if ( sunk >= floorAt ) break;
+      before = floorAt - sunk;
+      at += stride;
+      sunk += 1.0 / steps;
+      floorAt = 1.0 - textureGrad( normalMap, at, ddx, ddy ).a;
+    }
+    float after = sunk - floorAt;
+    at -= stride * clamp( after / max( after + before, 1e-4 ), 0.0, 1.0 );
+    return at - vNormalMapUv;
+  }
+  #endif
+
+  float machiHash( vec2 p ) {
+    vec3 q = fract( vec3( p.xyx ) * 0.1031 );
+    q += dot( q, q.yzx + 33.33 );
+    return fract( ( q.x + q.y ) * q.z );
+  }
+  float machiNoise( vec2 p ) {
+    vec2 i = floor( p );
+    vec2 f = fract( p );
+    vec2 u = f * f * ( 3.0 - 2.0 * f );
+    return mix( mix( machiHash( i ), machiHash( i + vec2( 1.0, 0.0 ) ), u.x ),
+      mix( machiHash( i + vec2( 0.0, 1.0 ) ), machiHash( i + vec2( 1.0, 1.0 ) ), u.x ), u.y );
+  }
+  // Soft blotches: three sizes of noise, each half as strong as the one before.
+  float machiCloud( vec2 p ) {
+    return machiNoise( p ) * 0.57 + machiNoise( p * 2.03 + 17.1 ) * 0.29 + machiNoise( p * 4.11 + 41.7 ) * 0.14;
+  }
+`
+
+// Unevenness and weather, worked out from where a spot is in the world, so that it never
+// repeats the way a tiled picture does.
+const SURFACE_WEAR = /* glsl */`
+  float machiRough = 0.0;
+  #ifdef MACHI_WEAR
+  {
+    vec3 machiN = inverseTransformDirection( normalize( vNormal ), viewMatrix );
+    #ifdef DOUBLE_SIDED
+      machiN *= gl_FrontFacing ? 1.0 : - 1.0;
+    #endif
+    vec3 machiA = abs( machiN );
+    // Across a face: along the ground for what lies flat, along the wall and up it otherwise.
+    vec2 machiQ = machiA.y > 0.6 ? vMachiWorld.xz
+      : machiA.x > machiA.z ? vec2( vMachiWorld.z + vMachiWorld.x * 0.37, vMachiWorld.y ) : vec2( vMachiWorld.x + vMachiWorld.z * 0.37, vMachiWorld.y );
+    float machiFar = length( vViewPosition );
+    float machiBroad = machiCloud( machiQ * 0.23 );
+    float machiFine = mix( 0.5, machiCloud( machiQ * 1.9 + 9.0 ), 1.0 - smoothstep( 50.0, 150.0, machiFar ) );
+    float machiGrain = ( machiNoise( machiQ * 173.0 ) - 0.5 ) * ( 1.0 - smoothstep( 1.2, 3.5, machiFar ) );
+    #ifdef MACHI_OUTDOOR
+      float machiWall = 1.0 - smoothstep( 0.45, 0.7, machiA.y );
+      float machiUp = smoothstep( 0.5, 0.9, machiN.y );
+      // Dirt splashed up from the ground, higher in some places than in others.
+      float machiFoot = machiWall * ( 1.0 - smoothstep( 0.02, 0.3 + 0.8 * machiBroad, vMachiWorld.y ) );
+      // Streaks where rain runs down a wall.
+      float machiStreak = machiWall * smoothstep( 0.55, 0.95, machiNoise( vec2( machiQ.x * 7.0, machiQ.y * 0.33 ) ) )
+        * ( 0.3 + 0.7 * machiNoise( machiQ * 0.6 + 5.0 ) );
+      // Dust and moss in patches on what faces the sky.
+      float machiDust = machiUp * smoothstep( 0.42, 0.8, machiCloud( machiQ * 0.5 + 3.0 ) );
+      float machiDirt = machiFoot * 0.5 + machiStreak * 0.2 + machiDust * 0.22;
+      diffuseColor.rgb *= 1.0 + ( machiBroad - 0.5 ) * 0.17 + ( machiFine - 0.5 ) * 0.08 + machiGrain * 0.07;
+      diffuseColor.rgb = mix( diffuseColor.rgb, diffuseColor.rgb * vec3( 0.50, 0.45, 0.37 ), machiDirt );
+      machiRough = ( machiFine - 0.5 ) * 0.16 + machiDirt * 0.12 + machiGrain * 0.1;
+    #else
+      diffuseColor.rgb *= 1.0 + ( machiBroad - 0.5 ) * 0.05 + ( machiFine - 0.5 ) * 0.03 + machiGrain * 0.05;
+      machiRough = ( machiFine - 0.5 ) * 0.1 + machiGrain * 0.08;
+    #endif
+  }
+  #endif
+`
+
+const SURFACE_ROOM = /* glsl */`
+  #ifdef MACHI_INDOOR
+    #if defined( RE_IndirectDiffuse )
+      // A little more of it from above and from one side than from the other, so that the
+      // faces of a piece of furniture differ.
+      vec3 machiFace = inverseTransformDirection( geometryNormal, viewMatrix );
+      irradiance = machiRoom * ( 0.86 + 0.14 * machiFace.y + 0.05 * dot( machiFace.xz, vec2( 0.6, 0.8 ) ) );
+      iblIrradiance = vec3( 0.0 );
+    #endif
+    #if defined( RE_IndirectSpecular )
+      radiance = machiRoom * 0.25;
+    #endif
+  #endif
+`
+
+function surface(made) {
+  made.userData.parallax = { value: 0 }
+  made.onBeforeCompile = (shader) => {
+    shader.uniforms.parallaxDepth = made.userData.parallax
+    shader.uniforms.machiRoom = roomLight
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vMachiWorld;')
+      .replace('#include <project_vertex>', '#include <project_vertex>\nvMachiWorld = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;')
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <normalmap_pars_fragment>', `#include <normalmap_pars_fragment>
-        uniform float parallaxDepth;
-        #ifndef USE_NORMALMAP_TANGENTSPACE
-        vec2 parallaxShift() { return vec2( 0.0 ); }
-        #else
-        vec2 parallaxShift() {
-          float distance = length( vViewPosition );
-          float reach = parallaxDepth * ( 1.0 - smoothstep( 9.0, 22.0, distance ) );
-          if ( reach <= 0.0 ) return vec2( 0.0 );
-          vec3 facing = normalize( vNormal );
-          #ifdef DOUBLE_SIDED
-            facing *= gl_FrontFacing ? 1.0 : - 1.0;
-          #endif
-          mat3 frame = getTangentFrame( - vViewPosition, facing, vNormalMapUv );
-          vec3 eye = normalize( vViewPosition );
-          vec3 sight = vec3( dot( eye, frame[ 0 ] ), dot( eye, frame[ 1 ] ), max( dot( eye, frame[ 2 ] ), 0.22 ) );
-          vec2 ddx = dFdx( vNormalMapUv );
-          vec2 ddy = dFdy( vNormalMapUv );
-          const float steps = 12.0;
-          vec2 stride = - sight.xy / sight.z * reach / steps;
-          vec2 at = vNormalMapUv;
-          float sunk = 0.0;
-          float floorAt = 1.0 - textureGrad( normalMap, at, ddx, ddy ).a;
-          float before = 0.0;
-          for ( int index = 0; index < 12; index ++ ) {
-            if ( sunk >= floorAt ) break;
-            before = floorAt - sunk;
-            at += stride;
-            sunk += 1.0 / steps;
-            floorAt = 1.0 - textureGrad( normalMap, at, ddx, ddy ).a;
-          }
-          float after = sunk - floorAt;
-          at -= stride * clamp( after / max( after + before, 1e-4 ), 0.0, 1.0 );
-          return at - vNormalMapUv;
-        }
-        #endif`)
-      .replace('#include <map_fragment>', `vec2 parallaxUv = parallaxShift();
-        ${THREE.ShaderChunk.map_fragment.replaceAll('vMapUv', '( vMapUv + parallaxUv )')}`)
-      .replace('#include <roughnessmap_fragment>', THREE.ShaderChunk.roughnessmap_fragment.replaceAll('vRoughnessMapUv', '( vRoughnessMapUv + parallaxUv )'))
+      .replace('#include <normalmap_pars_fragment>', `#include <normalmap_pars_fragment>\n${SURFACE_PARS}`)
+      .replace('#include <map_fragment>', `vec2 parallaxUv = vec2( 0.0 );
+        #ifdef MACHI_PARALLAX
+          parallaxUv = parallaxShift();
+        #endif
+        ${THREE.ShaderChunk.map_fragment.replaceAll('vMapUv', '( vMapUv + parallaxUv )')}
+        ${SURFACE_WEAR}`)
+      .replace('#include <roughnessmap_fragment>', `${THREE.ShaderChunk.roughnessmap_fragment.replaceAll('vRoughnessMapUv', '( vRoughnessMapUv + parallaxUv )')}
+        roughnessFactor = clamp( roughnessFactor + machiRough, 0.04, 1.0 );`)
       .replace('#include <normal_fragment_maps>', THREE.ShaderChunk.normal_fragment_maps.replaceAll('texture2D( normalMap, vNormalMapUv )', 'texture2D( normalMap, vNormalMapUv + parallaxUv )'))
+      .replace('#include <lights_fragment_end>', `${SURFACE_ROOM}\n#include <lights_fragment_end>`)
       .replace('#include <aomap_fragment>', THREE.ShaderChunk.aomap_fragment.replaceAll('vAoMapUv', '( vAoMapUv + parallaxUv )'))
   }
-  material.customProgramCacheKey = () => 'parallax'
+  made.customProgramCacheKey = () => 'machi-surface'
 }
 
-function dress(material) {
-  const { set, wants } = material.userData
-  if (!set) return
-  material.normalMap = detail >= 1 ? set.normalMap : null
-  material.roughnessMap = detail >= 1 ? set.surfaceMap : null
-  material.aoMap = detail >= 1 ? set.surfaceMap : null
-  const deep = detail >= 2 && set.relief && wants
-  if (deep && !material.userData.parallax) parallax(material, set.depth / set.metres * 1.5)
-  if (material.userData.parallax) material.userData.parallax.value = deep ? set.depth / set.metres * 1.5 : 0
-  material.needsUpdate = true
+function dress(made) {
+  const { set, wants, recipe } = made.userData
+  if (!recipe) return
+  const flag = (name, on) => {
+    if (on) made.defines[name] = ''
+    else delete made.defines[name]
+  }
+  flag('MACHI_WEAR', detail >= 1)
+  if (set) {
+    made.normalMap = detail >= 1 ? set.normalMap : null
+    made.roughnessMap = detail >= 1 ? set.surfaceMap : null
+    made.aoMap = detail >= 1 ? set.surfaceMap : null
+    const deep = detail >= 2 && set.relief && wants
+    flag('MACHI_PARALLAX', deep)
+    made.userData.parallax.value = deep ? set.depth / set.metres * 1.5 : 0
+  }
+  made.needsUpdate = true
 }
 
 const materials = new Map()
@@ -817,27 +1075,38 @@ const materials = new Map()
 export function setDetail(level) {
   if (detail === level) return
   detail = level
-  for (const material of materials.values()) dress(material)
+  for (const made of materials.values()) dress(made)
 }
 
 // material('mortar'), material('mortar', '#f4f2ea') for a tint, or material('#335577') for flat paint.
-export function material(name, tint = '#ffffff', { roughness, metalness = 0, twoSided = false, relief = true } = {}) {
-  const key = `${name}|${tint}|${roughness}|${metalness}|${twoSided}|${relief}`
+// `where` is 'out' for what stands in the weather and 'in' for what is lit by a room.
+export function material(name, tint = '#ffffff', { roughness, metalness = 0, twoSided = false, relief = true, where = '' } = {}) {
+  const key = `${name}|${tint}|${roughness}|${metalness}|${twoSided}|${relief}|${where}`
   if (!materials.has(key)) {
     const textured = Object.hasOwn(TEXTURES, name)
     const options = { color: textured ? tint : name, roughness: roughness ?? (textured ? 1 : 0.85), metalness }
     if (twoSided) options.side = THREE.DoubleSide
     const made = new THREE.MeshStandardMaterial(options)
+    made.userData = { recipe: [name, tint, { roughness, metalness, twoSided, relief }], wants: relief }
     if (textured) {
-      const set = textureSet(name)
-      made.map = set.map
-      made.userData = { set, wants: relief }
+      made.userData.set = textureSet(name)
+      made.map = made.userData.set.map
       made.aoMapIntensity = 0.85
-      dress(made)
     }
+    if (where === 'out') made.defines.MACHI_OUTDOOR = ''
+    if (where === 'in') made.defines.MACHI_INDOOR = ''
+    surface(made)
+    dress(made)
     materials.set(key, made)
   }
   return materials.get(key)
+}
+
+// The same material as it is where it stands: 'out' in the weather, 'in' in the light of a room.
+export function placed(source, where) {
+  const recipe = source.userData?.recipe
+  if (!recipe || !where) return source
+  return material(recipe[0], recipe[1], { ...recipe[2], where })
 }
 
 // The material of a finish from the design catalogue, such as 'mortar-cream' or 'floor-oak'.

@@ -1,10 +1,10 @@
 import { LoadingManager, MeshStandardMaterial, Scene, SRGBColorSpace, TextureLoader } from "three";
-import { readFbxUnitScale, readFbxVisibility } from "./fbx-visibility.js";
-import { readUnityAnimator, readUnityFace } from "./unity-expressions.js";
-import { readUnityFxDefaults } from "./unity-fx.js";
-import { applyUnityMaterial, findFbxTexture, readUnityMaterials } from "./unity-materials.js";
-import { applyUnityPrefab, createUnityNodeLookup, readUnityPrefab } from "./unity-prefab.js";
-import { readUnityPackage } from "./unitypackage.js";
+import { readFbxUnitScale, readFbxVisibility } from "./fbx-visibility.js?v=online-1794946480502";
+import { readUnityAnimator, readUnityFace } from "./unity-expressions.js?v=online-1794946480502";
+import { readUnityFxDefaults } from "./unity-fx.js?v=online-1794946480502";
+import { applyUnityMaterial, findFbxTexture, readUnityMaterials } from "./unity-materials.js?v=online-1794946480502";
+import { applyUnityPrefab, createUnityNodeLookup, readUnityPrefab } from "./unity-prefab.js?v=online-1794946480502";
+import { readUnityPackage } from "./unitypackage.js?v=online-1794946480502";
 
 const imageFile = /\.(?:png|jpe?g|webp|bmp|gif)$/i;
 const modelFile = /\.(?:vrm|glb|fbx|unitypackage)$/i;

@@ -1,4 +1,4 @@
-import { block, documents, field, items, refGuid, refId, refs, unwrap, yamlString } from "./unity-fx.js";
+import { block, documents, field, items, refGuid, refId, refs, unwrap, yamlString } from "./unity-fx.js?v=online-1794946480502";
 
 const menuTypes = new Map([[101, "button"], [102, "toggle"], [103, "submenu"], [203, "slider"]]);
 // The hand signs of VRChat, which avatars usually wire to facial expressions.

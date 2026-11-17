@@ -2,16 +2,19 @@
 // with openings (doors and windows) cut into them, finishes on both faces, rooms, furniture and
 // stairs. Everything here is plain geometry in metres, measured from the north-west corner of
 // the lot, so that the 3D view, the collisions, the design tools and the tests share one model.
+import { STAIR_LOOKS, stairLayout } from './stairs.js?v=online-1794946480502'
+
+export { STAIR_LOOKS, stairLayout }
 
 export const TILE = 8 // metres along one town tile
-export const CELLS = 5 // floor-plan cells along one tile, for the easy grid plans
-export const CELL = TILE / CELLS
+// Easy plans are drawn on the grid Japanese houses are built on: half a 間, 910 mm. Eight
+// cells fit across a tile, with a strip left over along each boundary of the lot.
+export const CELLS = 8
+export const CELL = 0.91
 // Walls are cut at this height when a room is looked into from above.
 // How much room a resident needs to either side, in metres.
 export const BODY = 0.24
 export const CUT = 1.2
-// A wall along the edge of a lot is set back this far, so that it stays on its own land.
-const EDGE = 0.1
 const SNAP = 0.02
 
 export function hash(a, b = 0, c = 0) {
@@ -31,24 +34,31 @@ export const STYLE_LABELS = {
 }
 export const STYLE_FLOORS = { modern: 3, europe: 3, japan: 2, danchi: 5, mansion: 14, office: 20, brutal: 20 }
 export const ROOM_LABELS = {
-  L: 'リビング', K: 'キッチン', B: '寝室', W: '和室', T: 'トイレ', U: '浴室', G: '玄関',
-  H: '廊下', S: '階段', O: '仕事部屋', M: 'ホール', V: 'ベランダ', P: '個室', E: '物置',
+  L: 'リビング', D: 'ダイニング', K: 'キッチン', B: '洋室', P: '個室', W: '和室', R: '押入れ・収納', N: '洗面室', U: '浴室', T: 'トイレ',
+  G: '玄関', H: '廊下', S: '階段', Y: '縁側', V: 'ベランダ', E: '納戸', M: '店舗', O: '事務室',
+  C: '共用廊下', A: 'エントランス', X: 'エレベーター', J: '駐車場',
 }
 export const ROOM_COLORS = {
-  L: '#f0d9a8', K: '#f3c9a0', B: '#c9d6ee', W: '#cfdc9e', T: '#d5e6ea', U: '#b9dce6', G: '#d9cfc0',
-  H: '#e7e2d6', S: '#cfc6dd', O: '#c6d3cf', M: '#ead7d2', V: '#dfe7df', P: '#e3c6dc', E: '#c9c6bf',
+  L: '#f0d9a8', D: '#efcf9c', K: '#f3c9a0', B: '#c9d6ee', P: '#e3c6dc', W: '#cfdc9e', R: '#d8cdb8', N: '#cfe3e0', U: '#b9dce6', T: '#d5e6ea',
+  G: '#d9cfc0', H: '#e7e2d6', S: '#cfc6dd', Y: '#dcc9a2', V: '#dfe7df', E: '#c9c6bf', M: '#ead7d2', O: '#c6d3cf',
+  C: '#d3d6d2', A: '#e6dccb', X: '#b8bfd0', J: '#c2c4c0',
 }
 
-// Storey height, height of the ground floor above the street, outside wall thickness and roof.
+// The measures of each kind of building, in metres, after the real thing.
+// storey: floor to floor. ceiling: clear height of a room. base: ground floor above the street.
+// doma: how far the earth floor of the entrance (玄関の土間) lies below the ground floor.
+// wall / inner: thickness of outside walls and of partitions. stair: how stairs are built.
 export const STYLES = {
-  modern: { storey: 2.8, base: 0.18, wall: 0.2, roof: { k: 'flat', f: 'roof-metal', parapet: 0.35 } },
-  europe: { storey: 2.9, base: 0.24, wall: 0.24, roof: { k: 'hip', f: 'roof-tile-orange', pitch: 40, eave: 0.4 } },
-  japan: { storey: 2.7, base: 0.3, wall: 0.18, roof: { k: 'hip', f: 'roof-kawara', pitch: 27, eave: 0.85 } },
-  danchi: { storey: 2.65, base: 0.3, wall: 0.2, roof: { k: 'flat', f: 'roof-concrete', parapet: 0.45 } },
-  mansion: { storey: 2.9, base: 0.18, wall: 0.22, roof: { k: 'flat', f: 'roof-concrete', parapet: 1.0 } },
-  office: { storey: 3.6, base: 0.15, wall: 0.2, roof: { k: 'flat', f: 'roof-concrete', parapet: 0.9 } },
-  brutal: { storey: 3.4, base: 0.2, wall: 0.3, roof: { k: 'flat', f: 'roof-concrete', parapet: 1.2 } },
-  shop: { storey: 3.4, base: 0.12, wall: 0.2, roof: { k: 'flat', f: 'roof-concrete', parapet: 0.7 } },
+  // 木造2階建て: 1階床は地面から55cm、階高2.85m、天井高2.4m。
+  modern: { storey: 2.85, ceiling: 2.4, base: 0.55, doma: 0.2, wall: 0.17, inner: 0.125, stair: 'wood', roof: { k: 'gable', f: 'roof-slate', pitch: 22, eave: 0.6 } },
+  europe: { storey: 2.9, ceiling: 2.5, base: 0.5, doma: 0.15, wall: 0.2, inner: 0.125, stair: 'wood', roof: { k: 'gable', f: 'roof-tile-orange', pitch: 40, eave: 0.45 } },
+  japan: { storey: 2.85, ceiling: 2.4, base: 0.6, doma: 0.3, wall: 0.17, inner: 0.12, stair: 'wood', roof: { k: 'hip', f: 'roof-kawara', pitch: 26, eave: 0.9 } },
+  // 階段室型の団地: 階高2.6m、1階床は半階ぶん持ち上げ、階段室の踊り場の下から入る。
+  danchi: { storey: 2.6, ceiling: 2.3, base: 0.9, doma: 0.06, wall: 0.18, inner: 0.1, stair: 'rc', roof: { k: 'flat', f: 'roof-concrete', parapet: 0.3 } },
+  mansion: { storey: 2.9, ceiling: 2.45, base: 0.3, doma: 0.05, wall: 0.18, inner: 0.1, stair: 'rc', roof: { k: 'flat', f: 'roof-concrete', parapet: 0.9 } },
+  office: { storey: 3.8, ceiling: 2.7, base: 0.15, doma: 0, wall: 0.2, inner: 0.1, stair: 'rc', roof: { k: 'flat', f: 'roof-concrete', parapet: 0.9 } },
+  brutal: { storey: 3.3, ceiling: 2.6, base: 0.3, doma: 0, wall: 0.3, inner: 0.15, stair: 'rc', roof: { k: 'flat', f: 'roof-concrete', parapet: 1.1 } },
+  shop: { storey: 3.2, ceiling: 2.7, base: 0.12, doma: 0, wall: 0.18, inner: 0.1, stair: 'wood', roof: { k: 'flat', f: 'roof-concrete', parapet: 0.6 } },
 }
 
 // ---- What a building can be made of -----------------------------------------
@@ -147,31 +157,47 @@ const opening = (label, door, w, h, s, extra = {}) => ({ label, door, w, h, s, .
 
 // Doors and windows: default width, height and height of the sill above the floor.
 export const OPENINGS = {
-  'door-entrance': opening('玄関ドア', true, 0.9, 2.1, 0),
-  'door-wood': opening('木のドア', true, 0.8, 2.0, 0),
+  // 玄関ドアは外開き、幅92cm・高さ2.33m。室内ドアは高さ2m。
+  'door-entrance': opening('玄関ドア', true, 0.92, 2.33, 0),
+  'door-oyako': opening('親子ドア', true, 1.24, 2.33, 0),
+  'door-flat': opening('集合住宅の玄関ドア（鋼製）', true, 0.85, 2.0, 0),
+  'door-wood': opening('木のドア', true, 0.78, 2.0, 0),
   'door-white': opening('白いドア', true, 0.75, 2.0, 0),
-  'door-glass': opening('ガラスドア', true, 0.85, 2.05, 0, { glass: true }),
-  'door-steel': opening('スチールドア', true, 0.85, 2.0, 0),
-  'door-slide': opening('引き戸', true, 0.9, 2.0, 0, { slide: true }),
-  'door-fusuma': opening('ふすま', true, 1.3, 1.9, 0, { slide: true }),
-  'door-shoji': opening('障子', true, 1.3, 1.9, 0, { slide: true }),
-  'door-double': opening('両開きドア', true, 1.4, 2.1, 0),
-  'door-auto': opening('自動ドア', true, 1.4, 2.2, 0, { slide: true, glass: true }),
-  'door-terrace': opening('掃き出し窓（出入りできる）', true, 1.36, 2.0, 0.04, { slide: true, glass: true }),
-  arch: opening('開口（ドアなし）', true, 1.2, 2.1, 0, { open: true }),
-  'win-slide': opening('引き違い窓', false, 1.2, 1.15, 0.9),
-  'win-wide': opening('横長の窓', false, 1.4, 1.3, 0.85),
-  'win-full': opening('床までの窓', false, 1.3, 1.95, 0.1),
+  'door-glass': opening('ガラスドア', true, 0.8, 2.0, 0, { glass: true }),
+  'door-steel': opening('スチールドア', true, 0.78, 2.0, 0),
+  'door-fold': opening('浴室の折れ戸', true, 0.72, 2.0, 0.05),
+  // A door with a lock of its own, for a room that is kept private.
+  'door-key': opening('鍵付きのドア', true, 0.78, 2.0, 0, { lock: true }),
+  'door-slide': opening('引き戸', true, 0.8, 2.0, 0, { slide: true }),
+  'door-fusuma': opening('ふすま', true, 1.69, 1.8, 0, { slide: true }),
+  'door-shoji': opening('障子', true, 1.69, 1.8, 0, { slide: true }),
+  'door-closet': opening('クローゼットの折れ戸', true, 1.6, 2.0, 0),
+  'door-double': opening('両開きドア', true, 1.5, 2.1, 0),
+  'door-auto': opening('自動ドア', true, 1.6, 2.3, 0, { slide: true, glass: true }),
+  // 掃き出し窓（引き違い16520）: 幅1.65m・高さ2m。
+  'door-terrace': opening('掃き出し窓（出入りできる）', true, 1.65, 2.0, 0.03, { slide: true, glass: true }),
+  'lift-door': opening('エレベーターの扉', true, 0.8, 2.1, 0, { slide: true, lift: true }),
+  // ホームドア: the doors along the edge of a platform, which open only for a train that has stopped.
+  'door-platform': opening('ホームドア', true, 1.4, 2.1, 0, { slide: true, glass: true, platform: true }),
+  arch: opening('開口（ドアなし）', true, 1.2, 2.0, 0, { open: true }),
+  // 腰窓（引き違い16511）: 幅1.65m・高さ1.1m、窓の上端は床から2m。
+  'win-slide': opening('引き違い窓', false, 1.65, 1.1, 0.9),
+  'win-wide': opening('横長の窓', false, 1.65, 0.9, 1.1),
+  'win-full': opening('床までの窓', false, 1.65, 1.97, 0.03),
   'win-small': opening('小窓', false, 0.6, 0.5, 1.5),
-  'win-slit': opening('スリット窓', false, 0.34, 1.5, 0.6),
-  'win-fixed': opening('はめ殺し窓', false, 1.0, 1.0, 0.9),
-  'win-lattice': opening('格子窓', false, 1.1, 1.15, 0.9),
-  'win-shutter': opening('よろい戸つきの窓', false, 1.0, 1.25, 0.9),
-  'win-steel': opening('スチールサッシ', false, 1.2, 1.2, 0.9),
+  'win-high': opening('高窓', false, 0.74, 0.5, 1.5),
+  'win-tall': opening('縦すべり出し窓', false, 0.4, 1.1, 0.9),
+  'win-slit': opening('スリット窓', false, 0.34, 1.5, 0.5),
+  'win-fixed': opening('はめ殺し窓', false, 1.0, 1.0, 1.0),
+  'win-lattice': opening('面格子つきの窓', false, 1.19, 0.9, 1.1),
+  'win-shutter': opening('よろい戸つきの窓', false, 1.0, 1.2, 0.8),
+  'win-steel': opening('スチールサッシ', false, 1.69, 1.2, 0.8),
   'win-round': opening('丸窓', false, 0.8, 0.8, 1.1, { round: true }),
-  'win-shop': opening('ショーウィンドウ', false, 1.4, 2.3, 0.15),
-  'win-curtain': opening('カーテンウォール', false, 1.44, 2.6, 0.75),
-  'win-hood': opening('ひさし付きスリット窓', false, 0.4, 1.5, 0.6),
+  'win-shop': opening('ショーウィンドウ', false, 1.6, 2.2, 0.2),
+  'win-curtain': opening('カーテンウォール', false, 1.7, 2.6, 0.75),
+  'win-ribbon': opening('横連窓', false, 1.7, 1.5, 0.9),
+  'win-hood': opening('ひさし付きスリット窓', false, 0.5, 1.5, 0.6),
+  'win-block': opening('ガラスブロック', false, 0.8, 1.6, 0.4),
 }
 
 // Colours for the frames of doors and windows, and for door leaves.
@@ -202,7 +228,11 @@ export const ITEMS = {
   bed: item('ベッド', 'bedroom', 1.0, 1.95, 0.5),
   'bed-double': item('ダブルベッド', 'bedroom', 1.5, 1.95, 0.5),
   desk: item('机', 'bedroom', 1.1, 0.55, 0.72),
-  wardrobe: item('クローゼット', 'bedroom', 1.0, 0.55, 1.9),
+  wardrobe: item('洋服だんす', 'bedroom', 1.0, 0.55, 1.9),
+  tansu: item('たんす', 'japanese', 0.9, 0.45, 1.3),
+  cupboard: item('食器棚', 'dining', 0.9, 0.45, 1.85),
+  'mail-boxes': item('集合郵便受け', 'entrance', 1.2, 0.3, 1.3),
+  car: item('自動車', 'garden', 1.48, 3.4, 1.55),
   chabudai: item('ちゃぶ台', 'japanese', 1.0, 1.0, 0.32),
   zabuton: item('ざぶとん', 'japanese', 0.5, 0.5, 0.08, { solid: false }),
   futon: item('ふとん', 'japanese', 1.0, 1.9, 0.14, { solid: false }),
@@ -227,12 +257,24 @@ export const ITEMS = {
   mailbox: item('ポスト', 'garden', 0.3, 0.3, 1.1),
   bicycle: item('自転車', 'garden', 0.5, 1.7, 1.0),
   vending: item('自動販売機', 'garden', 1.0, 0.7, 1.85),
-  'ac-unit': item('室外機', 'garden', 0.8, 0.32, 0.6),
+  // An outdoor unit of 3.6-4 kW: 800 x 550 x 290 mm, with its valve cover and grille, on a stand.
+  'ac-unit': item('室外機', 'garden', 0.86, 0.34, 0.65),
+  // 機能門柱: the post by a gate with the nameplate, the intercom, the letterbox and a light.
+  'gate-post': item('機能門柱', 'garden', 0.3, 0.16, 1.45),
   lantern: item('石灯籠', 'garden', 0.5, 0.5, 1.3),
+  // 自動改札機: a cabinet 19 cm wide and 1.5 m long; the way through between two of them is
+  // 60 cm wide (90 cm for wheelchairs). The see-through one shows its works.
+  'ticket-gate': item('自動改札機', 'station', 0.19, 1.5, 1.03),
+  'ticket-gate-clear': item('自動改札機（スケルトン）', 'station', 0.19, 1.5, 1.03),
+  'ticket-machine': item('券売機', 'station', 0.85, 0.5, 1.75),
+  'platform-bench': item('ホームのベンチ', 'station', 1.8, 0.5, 0.8),
+  // 内方線付き点状ブロック: blocks of 30 cm with dots, and a raised line on the side away
+  // from the edge, laid along a platform.
+  'tactile-line': item('点字ブロック（ホーム）', 'station', 0.3, 2.4, 0.01, { solid: false }),
 }
 export const ITEM_GROUPS = {
   living: 'リビング', dining: 'ダイニング', bedroom: '寝室', japanese: '和室', water: '水まわり',
-  entrance: '玄関・物置', shop: 'お店', office: '仕事場', garden: '庭・外まわり',
+  entrance: '玄関・物置', shop: 'お店', office: '仕事場', garden: '庭・外まわり', station: '駅',
 }
 
 // Things hung on a wall: width and height in metres.
@@ -244,682 +286,9 @@ export const WALL_DECOR = {
 }
 export const ROOFS = { flat: '陸屋根（平ら）', hip: '寄棟', gable: '切妻', shed: '片流れ' }
 export const RAILS = { bars: '手すり（格子）', panel: '手すり（パネル）', glass: '手すり（ガラス）', solid: '腰壁' }
-export const STAIRS = { u: '折り返し階段', straight: 'まっすぐな階段' }
-
-// ---- Easy plans: a grid of room codes per storey -----------------------------
-
-const SIDES = [
-  { name: 's', dx: 0, dz: 1 }, { name: 'n', dx: 0, dz: -1 }, { name: 'e', dx: 1, dz: 0 }, { name: 'w', dx: -1, dz: 0 },
-]
-
-export function planOf(house) {
-  const width = CELLS * (house.w ?? 1)
-  const depth = CELLS * (house.d ?? 1)
-  const floors = house.floors ?? []
-  const at = (level, x, z) => (level < 0 || level >= floors.length || x < 0 || z < 0 || x >= width || z >= depth
-    ? '.' : floors[level][z * width + x] ?? '.')
-  const solid = (level, x, z) => {
-    const code = at(level, x, z)
-    return code !== '.' && code !== 'V'
-  }
-  return { width, depth, levels: floors.length, at, solid }
-}
-
-// The front door: a 玄関 on an outside wall, else the room nearest the front of the lot.
-export function entranceOf(plan) {
-  let best = null
-  for (let z = 0; z < plan.depth; z++) {
-    for (let x = 0; x < plan.width; x++) {
-      const code = plan.at(0, x, z)
-      if (code === '.' || code === 'V') continue
-      const exposed = SIDES.some((side) => plan.at(0, x + side.dx, z + side.dz) === '.')
-      const score = (code === 'G' && exposed ? 1000 : 0) + z * 10 - Math.abs(x + 0.5 - plan.width / 2)
-      if (!best || score > best.score) best = { x, z, score }
-    }
-  }
-  if (!best) return null
-  const side = SIDES.find(({ dx, dz }) => plan.at(0, best.x + dx, best.z + dz) === '.') ?? SIDES[0]
-  return { x: best.x, z: best.z, side }
-}
-
-// Rooms that open into one another. A stairwell is filled by its stairs, so nothing leads through it.
-const HALLWAYS = 'HGLMO'
-const DOOR_ORDER = 'HGSLMOKBWPEUT'
-
-// Works out the rooms of a grid storey and which shared walls get a doorway.
-const flightsOf = new WeakMap()
-const edgeOf = (cell, side) => (side === 's' ? `${cell.x},${cell.z},s` : side === 'n' ? `${cell.x},${cell.z - 1},s`
-  : side === 'e' ? `${cell.x},${cell.z},e` : `${cell.x - 1},${cell.z},e`)
-
-// Where the stairs of a plan painted on the grid stand, storey by storey. A flight takes one
-// cell of its stairwell (two, where there is another behind it), faces a way out, and the
-// flights of the storeys above stand on top of it, so that one doorway serves both ends.
-export function stairSpots(plan) {
-  if (flightsOf.has(plan)) return flightsOf.get(plan)
-  const levels = []
-  const key = (x, z) => `${x},${z}`
-  for (let level = 0; level < plan.levels - 1; level++) {
-    const spots = []
-    const seen = new Set()
-    for (let z = 0; z < plan.depth; z++) {
-      for (let x = 0; x < plan.width; x++) {
-        if (plan.at(level, x, z) !== 'S' || seen.has(key(x, z))) continue
-        const cells = []
-        const pending = [[x, z]]
-        seen.add(key(x, z))
-        while (pending.length) {
-          const [cx, cz] = pending.pop()
-          cells.push({ x: cx, z: cz })
-          for (const { dx, dz } of SIDES) {
-            if (plan.at(level, cx + dx, cz + dz) === 'S' && !seen.has(key(cx + dx, cz + dz))) {
-              seen.add(key(cx + dx, cz + dz))
-              pending.push([cx + dx, cz + dz])
-            }
-          }
-        }
-        cells.sort((a, b) => a.z - b.z || a.x - b.x)
-        const has = (cx, cz) => cells.some((cell) => cell.x === cx && cell.z === cz)
-        const under = (levels[level - 1] ?? []).find((spot) => spot.cells.every((cell) => has(cell.x, cell.z)))
-        if (under) {
-          spots.push(under)
-          continue
-        }
-        // The first flight of a stairwell: it needs somewhere to step off at the top, and is
-        // better with a cell behind it (longer, gentler steps) and a landing or a hall in front.
-        let best = null
-        for (const cell of cells) {
-          for (const side of SIDES) {
-            const fx = cell.x + side.dx
-            const fz = cell.z + side.dz
-            const code = plan.at(level, fx, fz)
-            const landing = has(fx, fz)
-            if (!landing && '.VS'.includes(code)) continue
-            const deep = has(cell.x - side.dx, cell.z - side.dz) && plan.at(level + 1, cell.x - side.dx, cell.z - side.dz) === 'S'
-            const score = (plan.solid(level + 1, fx, fz) ? 16 : 0) + (deep ? 4 : 0) + (landing ? 2 : 0) + (HALLWAYS.includes(code) ? 1 : 0)
-            if (!best || score > best.score) best = { score, side: side.name, cells: deep ? [cell, { x: cell.x - side.dx, z: cell.z - side.dz }] : [cell] }
-          }
-        }
-        best ??= { side: 's', cells: [cells[0]] }
-        spots.push({ side: best.side, cells: best.cells })
-      }
-    }
-    levels.push(spots)
-  }
-  levels.push([])
-  flightsOf.set(plan, levels)
-  return levels
-}
-
-export function gridRooms(plan, level, entrance) {
-  const room = new Map()
-  const rooms = []
-  const key = (x, z) => `${x},${z}`
-  for (let z = 0; z < plan.depth; z++) {
-    for (let x = 0; x < plan.width; x++) {
-      const code = plan.at(level, x, z)
-      if (code === '.' || room.has(key(x, z))) continue
-      const id = rooms.length
-      const cells = []
-      const pending = [[x, z]]
-      room.set(key(x, z), id)
-      while (pending.length) {
-        const [cx, cz] = pending.pop()
-        cells.push({ x: cx, z: cz })
-        for (const { dx, dz } of SIDES) {
-          const next = key(cx + dx, cz + dz)
-          if (plan.at(level, cx + dx, cz + dz) === code && !room.has(next)) {
-            room.set(next, id)
-            pending.push([cx + dx, cz + dz])
-          }
-        }
-      }
-      cells.sort((a, b) => a.z - b.z || a.x - b.x)
-      rooms.push({ id, code, cells })
-    }
-  }
-
-  // Shared walls between each pair of neighbouring rooms.
-  const shared = new Map()
-  for (let z = 0; z < plan.depth; z++) {
-    for (let x = 0; x < plan.width; x++) {
-      const a = room.get(key(x, z))
-      if (a === undefined) continue
-      for (const [dx, dz, edge] of [[1, 0, 'e'], [0, 1, 's']]) {
-        const b = room.get(key(x + dx, z + dz))
-        if (b === undefined || b === a) continue
-        const pair = a < b ? `${a}|${b}` : `${b}|${a}`
-        if (!shared.has(pair)) shared.set(pair, [])
-        shared.get(pair).push(`${x},${z},${edge}`)
-      }
-    }
-  }
-  const neighbours = (id) => [...shared.keys()].map((pair) => pair.split('|').map(Number))
-    .filter((pair) => pair.includes(id)).map((pair) => (pair[0] === id ? pair[1] : pair[0]))
-  const doors = new Set()
-  const linked = new Set()
-  // Flights that start on this storey, and those that arrive on it from below.
-  const spots = stairSpots(plan)
-  const flights = [...new Set([...(spots[level] ?? []), ...(spots[level - 1] ?? [])])]
-  // Stairs stand against the walls around them: only their open end can have a doorway.
-  const closed = new Set()
-  for (const { cells, side } of flights) {
-    for (const [index, cell] of cells.entries()) {
-      for (const { name } of SIDES) if (index > 0 || name !== side) closed.add(edgeOf(cell, name))
-    }
-  }
-  const link = (a, b, edge) => {
-    const pair = a < b ? `${a}|${b}` : `${b}|${a}`
-    if (linked.has(pair)) return true
-    const edges = (shared.get(pair) ?? []).filter((name) => !closed.has(name))
-    if (!edge && !edges.length) return false
-    linked.add(pair)
-    doors.add(edge ?? edges[Math.floor((edges.length - 1) / 2)])
-    return true
-  }
-  const rank = (id) => DOOR_ORDER.indexOf(rooms[id].code)
-  const through = (id) => !'SV'.includes(rooms[id].code)
-  // The open end of a flight leads onto its landing, or through a doorway into the next room.
-  const faced = new Set()
-  let arrival
-  for (const { cells: [front], side } of flights) {
-    const { dx, dz } = SIDES.find(({ name }) => name === side)
-    const here = room.get(key(front.x, front.z))
-    const there = room.get(key(front.x + dx, front.z + dz))
-    if (there === undefined) continue
-    arrival ??= there
-    if (here === undefined || here === there) continue
-    doors.add(edgeOf(front, side))
-    linked.add(here < there ? `${here}|${there}` : `${there}|${here}`)
-    faced.add(here)
-  }
-  for (const { id, code } of rooms) {
-    const next = neighbours(id).sort((a, b) => rank(a) - rank(b))
-    if (code === 'V') next.forEach((other) => link(id, other))
-    else if (HALLWAYS.includes(code)) next.filter((other) => HALLWAYS.includes(rooms[other].code)).forEach((other) => link(id, other))
-    else if (!faced.has(id)) [...next.filter(through), ...next.filter((other) => !through(other))].some((other) => link(id, other))
-  }
-  // Open one more door wherever a room still cannot be reached from the way in: the front door
-  // on the ground floor, the top of the stairs above it.
-  const start = entrance && level === 0 ? room.get(key(entrance.x, entrance.z))
-    : arrival ?? rooms.find(({ code }) => 'SHGL'.includes(code))?.id ?? 0
-  for (let guard = 0; guard < rooms.length * 2; guard++) {
-    const reached = new Set([start])
-    const pending = [start]
-    while (pending.length) {
-      const current = pending.pop()
-      // Nobody walks on through a stairwell or across a balcony to reach another room.
-      if (current !== start && !through(current)) continue
-      for (const other of neighbours(current)) {
-        const pair = current < other ? `${current}|${other}` : `${other}|${current}`
-        if (linked.has(pair) && !reached.has(other)) {
-          reached.add(other)
-          pending.push(other)
-        }
-      }
-    }
-    const opened = rooms.some(({ id }) => !reached.has(id) && neighbours(id)
-      .filter((other) => reached.has(other) && (through(other) || other === start)).sort((a, b) => rank(a) - rank(b))
-      .some((other) => link(id, other)))
-    if (!opened) break
-  }
-  return { room, rooms, doors }
-}
-
-// ---- The look of a building: finishes chosen by style, or by the owner --------
-
-const INSIDE = {
-  L: ['wp-white', 'floor-oak'], K: ['wp-ivory', 'floor-oak'], B: ['wp-blue', 'floor-maple'], P: ['wp-pink', 'floor-maple'],
-  W: ['juraku', 'tatami'], T: ['tile-bath-white', 'tile-floor'], U: ['tile-bath', 'tile-floor-blue'], G: ['wp-ivory', 'genkan-floor'],
-  H: ['wp-white', 'floor-oak'], S: ['wp-white', 'floor-walnut'], O: ['wp-grey', 'carpet-grey'], M: ['wp-ivory', 'stone-floor'],
-  E: ['concrete', 'concrete-floor'], V: ['concrete', 'concrete-floor'],
-}
-
-// The finishes a style starts with; `house.look` replaces any of them.
-export function lookOf(house) {
-  const style = Object.hasOwn(STYLES, house.style) ? house.style : 'modern'
-  const seed = houseSeed(house.id)
-  const pick = (options, salt = 0) => options[Math.floor(hash(seed, salt + 1) * options.length) % options.length]
-  const roof = { ...STYLES[style].roof }
-  let look
-  if (style === 'danchi') {
-    look = { wall: pick(['mortar-white', 'mortar-cream', 'mortar-ivory']), frame: pick(['sage', 'silver', 'steel'], 2), door: pick(['steel', 'bronze', 'green'], 3), rail: 'panel', inside: 'wp-ivory' }
-  } else if (style === 'mansion') {
-    look = { wall: pick(['tile-white', 'tile-beige', 'tile-sand', 'tile-grey']), frame: 'black', door: 'bronze', rail: 'glass' }
-  } else if (style === 'office') {
-    look = { wall: 'metal-dark', frame: 'black', door: 'black', rail: 'glass' }
-  } else if (style === 'brutal') {
-    look = { wall: pick(['concrete-stained', 'concrete', 'concrete-dark']), frame: 'black', door: 'bronze', rail: 'solid' }
-  } else if (style === 'europe') {
-    look = { wall: pick(['stucco-cream', 'stucco-rose', 'stucco-ivory', 'stucco-yellow', 'stucco-sage']), frame: 'white', door: pick(['green', 'navy', 'red'], 5), rail: 'bars', low: 'brick-red' }
-    roof.f = pick(['roof-tile-orange', 'roof-tile-orange', 'roof-tile-brown'], 2)
-  } else if (style === 'japan') {
-    look = { wall: 'plaster-white', frame: 'wood', door: 'wood', rail: 'bars', low: pick(['wood-dark', 'wood-dark', 'wood-brown']) }
-    roof.f = pick(['roof-kawara', 'roof-kawara', 'roof-kawara-dark'], 2)
-  } else if (style === 'shop') {
-    look = { wall: 'stucco-ivory', frame: 'white', door: 'wood', rail: 'bars', low: 'brick-red' }
-  } else {
-    look = { wall: pick(['stucco-white', 'siding-white', 'siding-grey', 'stucco-charcoal']), frame: 'black', door: 'wood', rail: 'bars' }
-  }
-  const chosen = house.look ?? {}
-  if (Object.hasOwn(FINISHES, chosen.wall)) {
-    look.wall = chosen.wall
-    look.low = undefined
-  }
-  if (Object.hasOwn(FINISHES, chosen.roof)) roof.f = chosen.roof
-  if (Object.hasOwn(ROOFS, chosen.roofKind)) {
-    roof.k = chosen.roofKind
-    if (roof.k !== 'flat') {
-      roof.pitch ??= 30
-      roof.eave ??= 0.45
-    } else roof.parapet ??= 0.4
-  }
-  if (Object.hasOwn(FRAME_COLORS, chosen.frame)) look.frame = chosen.frame
-  if (Object.hasOwn(FRAME_COLORS, chosen.door)) look.door = chosen.door
-  return { ...look, style, seed, roof }
-}
-
-const ROOM_WINDOW = { L: 'full', K: 'mid', B: 'mid', W: 'mid', P: 'mid', T: 'small', U: 'small', H: 'small', S: 'slit', O: 'wide', M: 'shop' }
-
-function windowChoice(style, code, side, level, x, z, seed) {
-  let kind = ROOM_WINDOW[code] ?? ''
-  if (!kind) return ''
-  // Blocks of flats and towers stack the same windows storey after storey.
-  const stacked = ['danchi', 'mansion', 'office', 'brutal'].includes(style)
-  const roll = hash(seed + (stacked ? 0 : level * 7), x * 3 + z * 11, side.charCodeAt(0))
-  if (style === 'office') return 'win-curtain'
-  if (style === 'brutal') return roll > 0.45 ? 'win-hood' : ''
-  if (kind === 'shop') return side === 's' || roll > 0.5 ? 'win-shop' : 'win-slide'
-  if (kind === 'full' && side !== 's') kind = 'mid'
-  if (kind === 'small') return roll > 0.3 ? 'win-small' : ''
-  if (kind === 'slit') return roll > 0.3 ? 'win-slit' : ''
-  if (!(side === 's' || style === 'danchi' || style === 'mansion' || roll > 0.3)) return ''
-  if (kind === 'full') return 'win-full'
-  if (kind === 'wide') return 'win-wide'
-  return style === 'danchi' ? 'win-steel' : style === 'japan' ? 'win-lattice' : style === 'europe' ? 'win-shutter' : 'win-slide'
-}
-
-const round = (value) => Math.round(value * 100) / 100
-
-// Turns an easy grid plan into walls, openings, rooms, furniture and stairs.
-export function compileDesign(house) {
-  const look = lookOf(house)
-  const { style, seed } = look
-  const info = STYLES[style]
-  const plan = planOf(house)
-  const entrance = entranceOf(plan)
-  const lotWidth = plan.width * CELL
-  const lotDepth = plan.depth * CELL
-  const gx = (i) => (i <= 0 ? EDGE : i >= plan.width ? lotWidth - EDGE : i * CELL)
-  const gz = (j) => (j <= 0 ? EDGE : j >= plan.depth ? lotDepth - EDGE : j * CELL)
-  const storeys = []
-  // Each 玄関 on an outside wall gets a front door, on the first side that looks out.
-  const doorSide = (x, z) => SIDES.find(({ dx, dz }) => plan.at(0, x + dx, z + dz) === '.')?.name
-
-  for (let level = 0; level < plan.levels; level++) {
-    const { room, rooms, doors } = gridRooms(plan, level, entrance)
-    const idOf = (x, z) => room.get(`${x},${z}`)
-    const walls = []
-    const openings = []
-    const papered = (code) => (style === 'danchi' && 'LKBHP'.includes(code) ? look.inside : INSIDE[code]?.[0] ?? 'wp-white')
-
-    // One side of a unit edge: what stands there, and the finish seen from that side.
-    const face = (x, z) => {
-      const code = plan.at(level, x, z)
-      if (code === '.') return { kind: 'out', finish: look.wall }
-      if (code === 'V') return { kind: 'open', finish: look.wall, code }
-      return { kind: 'in', finish: papered(code), code, room: idOf(x, z) }
-    }
-    // `first` is the cell to the north or west of the edge, `second` the one to the south or east.
-    const describe = (first, second) => {
-      const kinds = `${first.kind}|${second.kind}`
-      if (first.kind === 'in' && second.kind === 'in') {
-        return first.room === second.room ? null : { type: 'int', t: 0.12, key: `int|${first.finish}|${second.finish}`, first, second }
-      }
-      if (first.kind === 'in' || second.kind === 'in') {
-        const low = look.low && level === 0 ? look.low : undefined
-        return { type: 'ext', t: info.wall, key: `ext|${kinds}|${first.finish}|${second.finish}`, first, second, low }
-      }
-      if (kinds === 'open|out' || kinds === 'out|open') return { type: 'rail', t: 0.06, key: `rail|${kinds}`, first, second }
-      return null
-    }
-
-    // The room an opening has to leave clear of the wall's ends and of the walls that cross it.
-    const fit = (lo, hi, start, end, wanted) => {
-      const from = Math.max(lo + 0.08, start + info.wall / 2 + 0.07)
-      const to = Math.min(hi - 0.08, end - info.wall / 2 - 0.07)
-      const width = Math.min(wanted, to - from)
-      return width < 0.25 ? null : { centre: (from + to) / 2, width }
-    }
-
-    const addOpening = (wall, kind, lo, hi, start, end, extra = {}) => {
-      const shape = OPENINGS[kind]
-      const { wide, ...rest } = extra
-      const room = fit(lo, hi, start, end, wide ?? shape.w)
-      if (!room) return
-      const height = Math.min(shape.h, info.storey - shape.s - 0.25)
-      openings.push({ w: wall, at: round(room.centre - start), k: kind, ww: round(room.width), hh: round(height), s: shape.s, ...rest })
-    }
-
-    // Walks one grid line and joins the unit edges that make one straight, uniform wall.
-    const trace = (count, along, across, cells, vertical) => {
-      let run = null
-      const flush = () => {
-        if (!run) return
-        const start = along(run.from)
-        const end = along(run.to + 1)
-        const a = vertical ? [round(across), round(start)] : [round(start), round(across)]
-        const b = vertical ? [round(across), round(end)] : [round(end), round(across)]
-        // The left face of a wall looks north for a wall running east, and east for one running south.
-        const { first, second } = run.edge
-        const [left, right] = vertical ? [second, first] : [first, second]
-        const wall = { a, b, t: run.edge.t, l: left.finish, r: right.finish }
-        if (run.edge.type === 'rail') Object.assign(wall, { h: 1.1, rail: look.rail, l: look.wall, r: look.wall })
-        if (run.edge.low) Object.assign(wall, left.kind === 'in' ? { rl: run.edge.low } : { ll: run.edge.low })
-        const index = walls.push(wall) - 1
-        for (const unit of run.units) {
-          const lo = along(unit.at)
-          const hi = along(unit.at + 1)
-          if (unit.opening) addOpening(index, unit.opening, lo, hi, start, end, unit.extra)
-        }
-        run = null
-      }
-      for (let at = 0; at < count; at++) {
-        const [firstCell, secondCell] = cells(at)
-        const edge = describe(face(...firstCell), face(...secondCell))
-        if (!edge) {
-          flush()
-          continue
-        }
-        if (run && run.edge.key !== edge.key) flush()
-        run ??= { from: at, edge, units: [] }
-        run.to = at
-        const unit = { at }
-        const inner = edge.first.kind === 'in' ? firstCell : secondCell
-        const outer = edge.first.kind === 'in' ? secondCell : firstCell
-        const side = vertical ? (inner === firstCell ? 'e' : 'w') : (inner === firstCell ? 's' : 'n')
-        if (edge.type === 'ext') {
-          const code = plan.at(level, ...inner)
-          const front = level === 0 && ((code === 'G' && doorSide(...inner) === side)
-            || (entrance && entrance.x === inner[0] && entrance.z === inner[1] && entrance.side.name === side))
-          if (front) {
-            unit.opening = style === 'shop' || style === 'office' || code === 'M' ? 'door-auto' : 'door-entrance'
-            unit.extra = { c: look.door, canopy: 1 }
-          } else if (plan.at(level, ...outer) === 'V') {
-            unit.opening = 'door-terrace'
-            unit.extra = { c: look.frame }
-          } else {
-            const kind = windowChoice(style, code, side, level, inner[0], inner[1], seed)
-            if (kind) {
-              unit.opening = kind
-              unit.extra = { c: kind === 'win-shutter' ? look.door : look.frame }
-            }
-          }
-        } else if (edge.type === 'int') {
-          const name = vertical ? `${firstCell[0]},${firstCell[1]},e` : `${firstCell[0]},${firstCell[1]},s`
-          if (doors.has(name)) {
-            const codes = edge.first.code + edge.second.code
-            unit.opening = codes.includes('S') || [...codes].every((letter) => HALLWAYS.includes(letter)) ? 'arch'
-              : codes.includes('W') ? 'door-fusuma' : /[TU]/.test(codes) ? 'door-white' : 'door-wood'
-            // A stairwell opens wide, so that the way up and the way down both fit in the doorway.
-            unit.extra = unit.opening !== 'arch' ? { c: style === 'japan' ? 'wood' : 'white' } : codes.includes('S') ? { wide: 1.4 } : {}
-          }
-        }
-        run.units.push(unit)
-      }
-      flush()
-    }
-    for (let j = 0; j <= plan.depth; j++) trace(plan.width, gx, gz(j), (x) => [[x, j - 1], [x, j]], false)
-    for (let i = 0; i <= plan.width; i++) trace(plan.depth, gz, gx(i), (z) => [[i - 1, z], [i, z]], true)
-
-    const spot = (cell, fx = 0.5, fz = 0.5) => [round(gx(cell.x) + (gx(cell.x + 1) - gx(cell.x)) * fx), round(gz(cell.z) + (gz(cell.z + 1) - gz(cell.z)) * fz)]
-    const seeds = []
-    const items = []
-    const stairs = []
-    // Doorways need room to walk through: nothing solid is put down within reach of one.
-    const ways = openings.filter((entry) => OPENINGS[entry.k]?.door).map((entry) => {
-      const wall = walls[entry.w]
-      const length = Math.hypot(wall.b[0] - wall.a[0], wall.b[1] - wall.a[1]) || 1
-      const ux = Math.abs(wall.b[0] - wall.a[0]) / length
-      const uz = Math.abs(wall.b[1] - wall.a[1]) / length
-      const x = wall.a[0] + (wall.b[0] - wall.a[0]) / length * entry.at
-      const z = wall.a[1] + (wall.b[1] - wall.a[1]) / length * entry.at
-      const along = entry.ww / 2 + 0.1
-      const reach = 0.8
-      return { x0: x - ux * along - uz * reach, x1: x + ux * along + uz * reach, z0: z - uz * along - ux * reach, z1: z + uz * along + ux * reach }
-    })
-    const put = (k, cell, fx, fz, r = 0) => {
-      const kind = ITEMS[k]
-      // If its usual place is in the way, a piece of furniture goes to the opposite wall.
-      const tries = kind.solid ? [[fx, fz, r], [1 - fx, fz, (360 - r) % 360], [fx, 1 - fz, (540 - r) % 360], [1 - fx, 1 - fz, (r + 180) % 360]] : [[fx, fz, r]]
-      for (const [tx, tz, turn] of tries) {
-        const [x, z] = spot(cell, tx, tz)
-        const [hw, hd] = turn % 180 ? [kind.d / 2, kind.w / 2] : [kind.w / 2, kind.d / 2]
-        if (kind.solid && ways.some((way) => x + hw > way.x0 && x - hw < way.x1 && z + hd > way.z0 && z - hd < way.z1)) continue
-        items.push({ k, x, z, r: turn, ...(set ? { set } : {}) })
-        return true
-      }
-      return false
-    }
-    // A table and its chairs are one set: without the table there are no chairs either.
-    let set = 0
-    let sets = 0
-    const together = (...pieces) => {
-      const from = items.length
-      set = ++sets
-      if (!pieces.every((piece) => put(...piece))) items.length = from
-      set = 0
-    }
-    for (const { code, cells } of rooms) {
-      const first = cells[0]
-      const last = cells.at(-1)
-      const middle = cells[Math.floor(cells.length / 2)]
-      const seat = { at: spot(first), f: INSIDE[code]?.[1] ?? 'floor-oak', c: 'ceil-white', n: ROOM_LABELS[code], code }
-      if (code === 'V') seat.open = 1
-      if (code === 'W') seat.c = 'ceil-wood'
-      seeds.push(seat)
-      const span = { x: Math.max(...cells.map((cell) => cell.x)) - Math.min(...cells.map((cell) => cell.x)) + 1, z: Math.max(...cells.map((cell) => cell.z)) - Math.min(...cells.map((cell) => cell.z)) + 1 }
-      if (code === 'L') {
-        put('sofa', first, 0.5, 0.3)
-        if (cells.length > 1) {
-          put('table-low', middle, 0.5, 0.5)
-          put('tv', last, 0.5, 0.84, 180)
-          put('ceiling-light', middle, 0.5, 0.5)
-        }
-        if (cells.length > 3) put('plant', last, 0.82, 0.2)
-      } else if (code === 'K') {
-        put('kitchen', first, 0.5, 0.25)
-        if (cells.length > 1) put('fridge', last, 0.27, 0.5, 90)
-      } else if (code === 'B' || code === 'P') {
-        if (span.z >= 2) put('bed', first, 0.38, 0.84)
-        else if (span.x >= 2) put('bed', first, 0.84, 0.4, 90)
-        else put('desk', first, 0.5, 0.25)
-        if (cells.length > 2) put('desk', last, 0.5, 0.78, 180)
-      } else if (code === 'W') {
-        if (span.x >= 2 || cells.length === 1) together(['chabudai', middle, 0.5, 0.5], ['zabuton', middle, 0.5, 0.13], ['zabuton', middle, 0.5, 0.87])
-        else put('chabudai', middle, 0.5, 0.5)
-      } else if (code === 'T') put('toilet', first, 0.5, 0.36)
-      else if (code === 'U') put('bathtub', first, 0.34, 0.5)
-      else if (code === 'G') put('shoe-box', first, 0.17, 0.5, 90)
-      else if (code === 'O') {
-        for (const [index, cell] of cells.entries()) {
-          if (index % 2) continue
-          together(['office-desk', cell, 0.5, 0.4], ['office-chair', cell, 0.5, 0.8, 180])
-        }
-      } else if (code === 'M') {
-        if (house.kind === 'shop') {
-          for (const [index, cell] of cells.entries()) if (cell.z === first.z && index % 2 === 0) put('rack', cell, 0.5, 0.3)
-          put('counter', last, 0.4, 0.3)
-          put('mirror', cells.find((cell) => cell.x === first.x) ?? first, 0.1, 0.5, 90)
-        } else {
-          for (const [index, cell] of cells.entries()) {
-            if ((cell.x + cell.z) % 2 || index === 0) continue
-            together(['cafe-table', cell, 0.5, 0.5], ['stool', cell, 0.12, 0.5], ['stool', cell, 0.88, 0.5])
-          }
-          put('counter', first, 0.5, 0.25)
-        }
-      } else if (code === 'E') put('boxes', first, 0.34, 0.34)
-    }
-    for (const { cells, side } of stairSpots(plan)[level] ?? []) {
-      const xs = cells.map((cell) => cell.x)
-      const zs = cells.map((cell) => cell.z)
-      const box = { x0: gx(Math.min(...xs)) + 0.09, x1: gx(Math.max(...xs) + 1) - 0.09, z0: gz(Math.min(...zs)) + 0.09, z1: gz(Math.max(...zs) + 1) - 0.09 }
-      const across = side === 's' || side === 'n'
-      const w = across ? box.x1 - box.x0 : box.z1 - box.z0
-      const l = across ? box.z1 - box.z0 : box.x1 - box.x0
-      stairs.push({
-        x: round((box.x0 + box.x1) / 2), z: round((box.z0 + box.z1) / 2), r: { s: 0, e: 90, n: 180, w: 270 }[side],
-        k: w >= 1.2 ? 'u' : 'straight', w: round(w), l: round(l),
-      })
-    }
-    storeys.push({ h: info.storey, walls, openings, rooms: seeds, items, stairs })
-  }
-
-  const draft = { v: 1, base: info.base, storeys, roof: look.roof }
-  for (let level = 0; level < storeys.length; level++) clearTheWay(draft, level, [lotWidth, lotDepth])
-  // Storeys that repeat the one below only say so: a tower is mostly the same plan again and again.
-  const seen = []
-  const compact = storeys.map((storey) => {
-    const body = JSON.stringify([storey.walls, storey.openings, storey.rooms, storey.items, storey.stairs])
-    const like = seen.indexOf(body)
-    seen.push(body)
-    return like >= 0 ? { h: storey.h, like } : storey
-  })
-  return { ...draft, storeys: compact }
-}
-
-// Furniture must not wall anybody in. Every doorway and every flight of stairs that can be
-// walked to in the empty storey stays within reach of the way in; a piece of furniture (or a
-// set of them) that would cut one off is left out.
-const cleared = new Map()
-function clearTheWay(design, level, size) {
-  const storey = design.storeys[level]
-  const solid = (entry) => Boolean(ITEMS[entry.k]?.solid)
-  const finish = (items) => {
-    storey.items = items.map(({ set, ...entry }) => entry)
-  }
-  if (!storey.items.some(solid)) return finish(storey.items)
-  // Storeys of a tower mostly repeat: the same storey is only worked out once.
-  const below = design.storeys[level - 1]?.stairs ?? []
-  const name = JSON.stringify([size, design.base, storey.h, storey.walls, storey.openings, storey.stairs, storey.items, below, level === 0])
-  if (cleared.has(name)) return finish(cleared.get(name))
-  const bare = { ...design, storeys: design.storeys.map((entry, index) => (index === level ? { ...entry, items: [] } : entry)) }
-  const solids = colliders(bare, level, { locked: false })
-
-  // A lattice of spots, each either free for a resident to stand on or not.
-  const step = 0.06
-  const cols = Math.ceil((size[0] + 2) / step) + 1
-  const rows = Math.ceil((size[1] + 2) / step) + 1
-  const index = (x, z) => [Math.round((x + 1) / step), Math.round((z + 1) / step)]
-  const walls = new Uint8Array(cols * rows)
-  const stamp = (grid, x0, z0, x1, z1, hit) => {
-    const [i0, j0] = index(x0, z0)
-    const [i1, j1] = index(x1, z1)
-    for (let j = Math.max(0, j0); j <= Math.min(rows - 1, j1); j++) {
-      for (let i = Math.max(0, i0); i <= Math.min(cols - 1, i1); i++) {
-        if (!grid[j * cols + i] && hit(i * step - 1, j * step - 1)) grid[j * cols + i] = 1
-      }
-    }
-  }
-  for (const wall of solids.segments) {
-    const reach = BODY + wall.r
-    const ex = wall.bx - wall.ax
-    const ez = wall.bz - wall.az
-    const length = ex * ex + ez * ez || 1e-9
-    stamp(walls, Math.min(wall.ax, wall.bx) - reach, Math.min(wall.az, wall.bz) - reach, Math.max(wall.ax, wall.bx) + reach, Math.max(wall.az, wall.bz) + reach, (x, z) => {
-      const t = Math.min(1, Math.max(0, ((x - wall.ax) * ex + (z - wall.az) * ez) / length))
-      return Math.hypot(x - wall.ax - ex * t, z - wall.az - ez * t) < reach - 1e-6
-    })
-  }
-  const stampBox = (grid, box) => {
-    const turn = box.r * Math.PI / 180
-    const cos = Math.cos(turn)
-    const sin = Math.sin(turn)
-    const reach = Math.hypot(box.w, box.d) / 2 + BODY
-    stamp(grid, box.x - reach, box.z - reach, box.x + reach, box.z + reach, (x, z) => {
-      const lx = (x - box.x) * cos - (z - box.z) * sin
-      const lz = (x - box.x) * sin + (z - box.z) * cos
-      return Math.hypot(Math.max(0, Math.abs(lx) - box.w / 2), Math.max(0, Math.abs(lz) - box.d / 2)) < BODY - 1e-6
-    })
-  }
-  for (const box of solids.boxes) stampBox(walls, box)
-
-  // Where people come in, and everything they must be able to get to.
-  const starts = level === 0 ? frontDoors(bare).map((door) => door.outside)
-    : colliders(bare, level - 1, { locked: false }).stairs.filter((stair) => stair.up)
-      .map(({ head }) => [head.at[0] + head.out[0] * (BODY + 0.16), head.at[1] + head.out[1] * (BODY + 0.16)])
-  const goals = solids.stairs.map(({ gate }) => [gate.at[0] + gate.out[0] * (BODY + 0.08), gate.at[1] + gate.out[1] * (BODY + 0.08)])
-  for (const entry of storey.openings) {
-    if (!OPENINGS[entry.k]?.door) continue
-    const wall = storey.walls[entry.w]
-    const length = Math.hypot(wall.b[0] - wall.a[0], wall.b[1] - wall.a[1]) || 1
-    const ux = (wall.b[0] - wall.a[0]) / length
-    const uz = (wall.b[1] - wall.a[1]) / length
-    const x = wall.a[0] + ux * entry.at
-    const z = wall.a[1] + uz * entry.at
-    goals.push([x + uz * 0.55, z - ux * 0.55], [x - uz * 0.55, z + ux * 0.55])
-  }
-  const walked = (grid) => {
-    const seen = new Uint8Array(cols * rows)
-    const pending = []
-    const visit = (i, j) => {
-      if (i < 0 || j < 0 || i >= cols || j >= rows || seen[j * cols + i] || grid[j * cols + i]) return
-      seen[j * cols + i] = 1
-      pending.push(i, j)
-    }
-    for (const [x, z] of starts) {
-      const [i, j] = index(x, z)
-      for (let dj = -2; dj <= 2; dj++) for (let di = -2; di <= 2; di++) visit(i + di, j + dj)
-    }
-    while (pending.length) {
-      const j = pending.pop()
-      const i = pending.pop()
-      visit(i + 1, j)
-      visit(i - 1, j)
-      visit(i, j + 1)
-      visit(i, j - 1)
-    }
-    return ([x, z]) => {
-      const [i, j] = index(x, z)
-      for (let dj = -1; dj <= 1; dj++) {
-        for (let di = -1; di <= 1; di++) {
-          if (i + di >= 0 && j + dj >= 0 && i + di < cols && j + dj < rows && seen[(j + dj) * cols + i + di]) return true
-        }
-      }
-      return false
-    }
-  }
-  const wanted = goals.filter(walked(walls))
-  const boxOf = (entry) => ({ x: entry.x, z: entry.z, w: ITEMS[entry.k].w, d: ITEMS[entry.k].d, r: entry.r ?? 0 })
-  const furnished = (items) => {
-    const grid = walls.slice()
-    for (const entry of items) if (solid(entry)) stampBox(grid, boxOf(entry))
-    return grid
-  }
-  let kept = storey.items
-  if (!wanted.every(walked(furnished(kept)))) {
-    // Something is in the way: put the furniture back one set at a time, without whatever blocks.
-    kept = []
-    for (let at = 0; at < storey.items.length;) {
-      let end = at + 1
-      while (storey.items[at].set && storey.items[end]?.set === storey.items[at].set) end++
-      const pieces = storey.items.slice(at, end)
-      at = end
-      if (!pieces.some(solid) || wanted.every(walked(furnished([...kept, ...pieces])))) kept.push(...pieces)
-    }
-  }
-  if (cleared.size > 400) cleared.clear()
-  cleared.set(name, kept)
-  finish(kept)
-}
-
-const compiled = new WeakMap()
-
-// The design of a building: the one its owner drew, or the one its easy plan stands for.
-export function designOf(house) {
-  if (house.design) return house.design
-  if (!compiled.has(house)) compiled.set(house, compileDesign(house))
-  return compiled.get(house)
-}
+export const STAIR_TURNS = { landing: '踊り場で曲がる', winder: '回り段で曲がる' }
+// The design of a building comes from the walls its owner drew, or from its easy plan: see
+// designOf() in plans.js.
 
 // A storey with its walls, even when it only says it repeats another one.
 export function storeyOf(design, level) {
@@ -930,12 +299,14 @@ export function storeyOf(design, level) {
   return {
     h: storey.h ?? source.h ?? 2.7, walls: source.walls ?? [], openings: source.openings ?? [], rooms: source.rooms ?? [],
     items: source.items ?? [], stairs: source.stairs ?? [], decor: source.decor ?? [], like: source === storey ? undefined : storey.like,
+    // steps: short flights inside the storey itself. lifts: where a lift car stops.
+    steps: source.steps ?? [], lifts: source.lifts ?? [],
   }
 }
 
 // How high the floor of a storey is above the street.
 export function floorHeight(design, level) {
-  let height = design.base ?? 0.18
+  let height = design.base ?? 0.3
   for (let index = 0; index < level; index++) height += design.storeys[index]?.h ?? design.storeys[design.storeys[index]?.like]?.h ?? 2.7
   return height
 }
@@ -1078,6 +449,8 @@ export function wallOutlines(walls, graph = wallGraph(walls)) {
       const end = [nodes[piece.b].x, nodes[piece.b].z]
       return {
         wall: piece.wall, from: piece.from, to: piece.to, a: piece.a, b: piece.b, d: piece.d,
+        // The two ends of its centre line.
+        start, end,
         // Each face as [point at the a end, point at the b end], with where they fall along the wall.
         l: [a.cw, b.ccw], r: [a.ccw, b.cw],
         span: { l: [along(a.cw), along(b.ccw)], r: [along(a.ccw), along(b.cw)] },
@@ -1184,8 +557,19 @@ function insidePoint(points, holes = []) {
   }
   return [cx, cz]
 }
-
 const resolved = new WeakMap()
+
+// How far up a flight of steps a spot is, from 0 at its foot to 1 at its top; -1 beside it.
+// Steps are a rectangle `w` wide and `l` long round (x, z), climbing towards their local -z.
+export function upSteps(steps, x, z) {
+  const turn = (steps.r ?? 0) * Math.PI / 180
+  const cos = Math.cos(turn)
+  const sin = Math.sin(turn)
+  const lx = (x - steps.x) * cos - (z - steps.z) * sin
+  const lz = (x - steps.x) * sin + (z - steps.z) * cos
+  if (Math.abs(lx) > steps.w / 2 || Math.abs(lz) > steps.l / 2) return -1
+  return (steps.l / 2 - lz) / steps.l
+}
 
 // Everything the 3D view and the collisions need to know about one storey, worked out once.
 export function storeyShape(design, level) {
@@ -1195,14 +579,42 @@ export function storeyShape(design, level) {
   const storey = storeyOf(design, level)
   if (!storey) return null
   const graph = wallGraph(storey.walls)
-  const outlines = wallOutlines(storey.walls, graph)
+  // Lines on the floor between rooms that share one space take no part in the corners of real
+  // walls: a wall that ends at such a line ends properly, with a face across its end.
+  // Nor does a rail or a low wall cut into a wall of full height where it meets one: its end
+  // simply stands against that wall, which goes on unbroken above it.
+  const low = (wall) => Boolean(wall.rail) || (wall.h ?? storey.h) < storey.h - 0.01
+  const outlines = { nodes: [], pieces: [], caps: [] }
+  for (const group of [(wall) => !low(wall), low]) {
+    const members = storey.walls.map((wall, index) => ({ wall, index })).filter(({ wall }) => !wall.open && group(wall))
+    const drawn = wallOutlines(members.map(({ wall }) => wall))
+    const offset = outlines.pieces.length
+    outlines.nodes.push(...drawn.nodes)
+    outlines.pieces.push(...drawn.pieces.map((piece) => ({ ...piece, wall: members[piece.wall].index })))
+    outlines.caps.push(...drawn.caps.map((cap) => ({ ...cap, piece: cap.piece + offset })))
+  }
   const rooms = findRooms(storey.walls, graph).map((room) => {
     const seed = storey.rooms.find((entry) => inRoom(room, entry.at[0], entry.at[1]))
-    return { ...room, f: seed?.f ?? 'floor-oak', c: seed?.c ?? 'ceil-white', n: seed?.n ?? '', code: seed?.code, open: Boolean(seed?.open) }
+    return {
+      ...room, f: seed?.f ?? 'floor-oak', c: seed?.c ?? 'ceil-white', n: seed?.n ?? '', code: seed?.code, open: Boolean(seed?.open),
+      // `y`: how far the floor of this room lies above (or below) the floor level of the storey.
+      y: seed?.y ?? 0, unit: seed?.unit ?? 0, shaft: Boolean(seed?.shaft),
+    }
   })
+  const roomAt = (x, z) => rooms.find((room) => inRoom(room, x, z)) ?? null
   // Inside means: within a room that has a roof over it. Balconies and terraces are outdoors.
   const indoors = (x, z) => rooms.some((room) => !room.open && inRoom(room, x, z))
   const floored = (x, z) => rooms.some((room) => inRoom(room, x, z))
+  // The height of the floor at a spot, measured from the floor level of the storey: lower in
+  // the earth-floored part of an entrance, rising along a flight of steps. Null off the floor.
+  const heightAt = (x, z) => {
+    for (const steps of storey.steps) {
+      const up = upSteps(steps, x, z)
+      if (up >= 0) return (steps.from ?? 0) + steps.rise * up
+    }
+    const room = roomAt(x, z)
+    return room ? room.y : null
+  }
   const sides = storey.walls.map((wall) => {
     const length = lengthOf(wall) || 1
     const d = [(wall.b[0] - wall.a[0]) / length, (wall.b[1] - wall.a[1]) / length]
@@ -1210,9 +622,25 @@ export function storeyShape(design, level) {
     const middle = [(wall.a[0] + wall.b[0]) / 2, (wall.a[1] + wall.b[1]) / 2]
     return { length, d, l: indoors(middle[0] + d[1] * reach, middle[1] - d[0] * reach), r: indoors(middle[0] - d[1] * reach, middle[1] + d[0] * reach) }
   })
-  const shape = { storey, graph, outlines, rooms, sides, indoors, floored, base: floorHeight(design, level) }
+  const shape = { storey, graph, outlines, rooms, sides, indoors, floored, roomAt, heightAt, base: floorHeight(design, level) }
   levels.set(level, shape)
   return shape
+}
+
+// The height of the ground on a lot outside the building itself: the street (0), a porch or a
+// terrace, or the steps up to one.
+export function yardHeight(design, x, z) {
+  const yard = design.yard
+  if (!yard) return 0
+  for (const steps of yard.steps ?? []) {
+    const up = upSteps(steps, x, z)
+    if (up >= 0) return (steps.from ?? 0) + steps.rise * up
+  }
+  let height = 0
+  for (const pad of yard.pads ?? []) {
+    if (x >= pad.x0 && x <= pad.x1 && z >= pad.z0 && z <= pad.z1) height = Math.max(height, pad.y)
+  }
+  return height
 }
 
 // The corners of a rectangle of width `w` and depth `d` centred on (x, z) and turned by `r` degrees.
@@ -1225,48 +653,43 @@ export function boxCorners(x, z, w, d, r = 0) {
   ])
 }
 
-// The way up a flight of stairs: points [x, z, height above the lower floor].
-// The stairs are entered at the front (their local +z side); a折り返し flight comes back to it.
-export function stairPath(stair, rise) {
-  const turn = stair.r * Math.PI / 180
-  const cos = Math.cos(turn)
-  const sin = Math.sin(turn)
-  const place = (x, z, y) => [stair.x + x * cos + z * sin, stair.z - x * sin + z * cos, y]
-  const { w, l } = stair
-  if (stair.k !== 'u') return [place(0, l / 2, 0), place(0, -l / 2, rise)]
-  const side = w / 4
-  const landing = Math.min(w / 2, l * 0.42)
-  const back = -l / 2 + landing / 2
-  return [
-    place(-side, l / 2, 0), place(-side, -l / 2 + landing, rise / 2), place(-side, back, rise / 2),
-    place(side, back, rise / 2), place(side, -l / 2 + landing, rise / 2), place(side, l / 2, rise),
-  ]
-}
-
-// Where the foot and the head of a flight are, and which way a walker leaves them.
-export function stairEnds(stair, rise) {
-  const path = stairPath(stair, rise)
-  const turn = stair.r * Math.PI / 180
-  const front = [Math.sin(turn), Math.cos(turn)]
-  const u = stair.k === 'u'
-  return {
-    path,
-    foot: { at: path[0], out: front, half: u ? stair.w / 4 : stair.w / 2 },
-    head: { at: path.at(-1), out: u ? front : [-front[0], -front[1]], half: u ? stair.w / 4 : stair.w / 2 },
-  }
-}
-
 const isDoor = (entry) => Boolean(OPENINGS[entry.k]?.door)
+const isLift = (entry) => Boolean(OPENINGS[entry.k]?.lift)
+// A door is named after its storey and where it stands, to the tenth of a metre.
+export const doorKey = (level, x, z) => `${level}:${Math.round(x * 10)}:${Math.round(z * 10)}`
+const flatted = new WeakMap()
+// Whether a building is divided into flats, each with a key of its own.
+function hasFlats(design) {
+  if (!flatted.has(design)) {
+    flatted.set(design, design.storeys.some((storey) => (storey.rooms ?? []).some((room) => room.unit && room.unit !== '0')))
+  }
+  return flatted.get(design)
+}
+// How much room a head needs under a flight of stairs, and how thick the flight itself is.
+const HEADROOM = 1.9
+const FLIGHT = 0.18
 
-// What stops a walker on one storey: stretches of wall (doorways left open), furniture and the
-// wells of stairs; and `rooms`, whose floors a walker upstairs has to stay on.
-// A locked building keeps the doors in its outside walls shut.
-export function colliders(design, level, { locked = false } = {}) {
+// What stops a walker on one storey: stretches of wall (doorways left open), furniture, the
+// stairs and their wells; `stairs`, with where each is stepped onto; `lifts`, with the door of
+// each; `doors`, each with the stretch of wall it closes and the lock that guards it; and
+// `rooms`, whose floors a walker upstairs has to stay on.
+//
+// Doors are opened by hand. A door between a home and the world outside it has a lock: the
+// key of the house ('main'), or in a block of flats the key of the flat ('storey:flat').
+export function colliders(design, level) {
   const shape = storeyShape(design, level)
-  if (!shape) return { segments: [], boxes: [], stairs: [], rooms: [] }
+  if (!shape) return { segments: [], boxes: [], stairs: [], lifts: [], doors: [], rooms: [] }
   const { storey, sides, rooms } = shape
   const segments = []
+  const liftDoors = []
+  const doors = []
+  const flats = hasFlats(design)
+  // The key that guards a room: none for the open air and for space that everyone shares.
+  const guard = (room) => (!room || room.open ? null : !flats ? 'main' : room.unit && room.unit !== '0' ? `${level}:${room.unit}` : null)
   storey.walls.forEach((wall, index) => {
+    // A line between two rooms that share one space (a step up from the entrance, a kitchen
+    // open to the living room) is nothing to walk into.
+    if (wall.open) return
     const { length, d } = sides[index]
     const reach = (wall.t ?? 0.12) / 2 + 0.07
     // A door leads outside when the ground on one side of it is not a room.
@@ -1275,8 +698,21 @@ export function colliders(design, level, { locked = false } = {}) {
       const z = wall.a[1] + d[1] * entry.at
       return !(shape.indoors(x + d[1] * reach, z - d[0] * reach) && shape.indoors(x - d[1] * reach, z + d[0] * reach))
     }
-    const gaps = storey.openings.filter((entry) => entry.w === index && isDoor(entry) && !(locked && !wall.rail && outside(entry)))
-      .map((entry) => [entry.at - entry.ww / 2, entry.at + entry.ww / 2]).sort((p, q) => p[0] - q[0])
+    const doorways = storey.openings.filter((entry) => entry.w === index && isDoor(entry))
+    for (const entry of doorways) {
+      const x = wall.a[0] + d[0] * entry.at
+      const z = wall.a[1] + d[1] * entry.at
+      const half = entry.ww / 2
+      const gate = { ax: x - d[0] * half, az: z - d[1] * half, bx: x + d[0] * half, bz: z + d[1] * half, r: (wall.t ?? 0.12) / 2 }
+      if (isLift(entry)) liftDoors.push({ x, z, d, half, r: gate.r })
+      // (An opening without a leaf, such as an arch, is never shut.)
+      else if (!OPENINGS[entry.k].open) {
+        const keys = [shape.roomAt(x + d[1] * reach, z - d[0] * reach), shape.roomAt(x - d[1] * reach, z + d[0] * reach)].map(guard)
+        const lock = keys[0] !== keys[1] ? keys[0] ?? keys[1] : OPENINGS[entry.k].lock ? keys[0] : null
+        doors.push({ key: doorKey(level, x, z), x, z, lock, auto: entry.k === 'door-auto', kind: entry.k, gate, outside: outside(entry) })
+      }
+    }
+    const gaps = doorways.map((entry) => [entry.at - entry.ww / 2, entry.at + entry.ww / 2]).sort((p, q) => p[0] - q[0])
     let from = 0
     const add = (to) => {
       if (to - from > 0.02) {
@@ -1294,18 +730,70 @@ export function colliders(design, level, { locked = false } = {}) {
   })
   const boxes = storey.items.filter((entry) => ITEMS[entry.k]?.solid)
     .map((entry) => ({ x: entry.x, z: entry.z, w: ITEMS[entry.k].w, d: ITEMS[entry.k].d, r: entry.r ?? 0 }))
+  // On the ground, the walls and fences round the lot, and what stands in the garden.
+  if (level === 0 && design.yard) {
+    for (const bound of design.yard.bounds ?? []) segments.push({ ax: bound.a[0], az: bound.a[1], bx: bound.b[0], bz: bound.b[1], r: (bound.t ?? 0.12) / 2 })
+    for (const entry of design.yard.items ?? []) {
+      if (ITEMS[entry.k]?.solid && !entry.hung) boxes.push({ x: entry.x, z: entry.z, w: ITEMS[entry.k].w, d: ITEMS[entry.k].d, r: entry.r ?? 0 })
+    }
+  }
+
   const stairs = []
+  const fence = (points) => {
+    for (let index = 1; index < points.length; index++) {
+      segments.push({ ax: points[index - 1][0], az: points[index - 1][1], bx: points[index][0], bz: points[index][1], r: 0.03 })
+    }
+  }
   // Stairs that start here go up; the well of the stairs from below is a hole to walk round.
   for (const [from, up] of [[level, true], [level - 1, false]]) {
     const lower = storeyOf(design, from)
     if (!lower || from + 1 >= design.storeys.length) continue
     for (const stair of lower.stairs) {
-      const ends = stairEnds(stair, lower.h)
-      boxes.push({ x: stair.x, z: stair.z, w: stair.w, d: stair.l, r: stair.r })
-      stairs.push({ ...ends, up, from, rise: lower.h, gate: up ? ends.foot : ends.head })
+      const layout = stairLayout(stair, lower.h)
+      if (up) {
+        // A flight stands in the way wherever it is too low to walk under: all of an ordinary
+        // stair, but not the half landing and the upper flight over the way in to a block of flats.
+        const floorAt = (s) => shape.heightAt(...layout.centre(s)) ?? 0
+        let start = null
+        const close = (to) => {
+          if (start === null) return
+          fence(layout.side(start, to, 1))
+          fence(layout.side(start, to, -1))
+          if (start > 1e-6) fence([layout.edge(start, 1), layout.edge(start, -1)])
+          fence([layout.edge(to, 1), layout.edge(to, -1)])
+          start = null
+        }
+        for (const piece of layout.pieces) {
+          const low = [[piece.from + 0.05, piece.y0], [piece.to - 0.05, piece.y1]]
+            .some(([s, y]) => y - FLIGHT - floorAt(s) < HEADROOM)
+          if (low && start === null) start = piece.from
+          if (!low) close(piece.from)
+        }
+        close(layout.total)
+      } else {
+        fence(layout.side(0, layout.total, 1))
+        fence(layout.side(0, layout.total, -1))
+        fence([layout.edge(0, 1), layout.edge(0, -1)])
+      }
+      stairs.push({ path: layout.path, foot: layout.foot, head: layout.head, up, from, rise: lower.h, gate: up ? layout.foot : layout.head })
     }
   }
-  return { segments, boxes, stairs, rooms }
+
+  // Each lift has the lift door nearest to it; the door only opens while the car stands behind it.
+  const lifts = storey.lifts.map((lift) => {
+    const door = liftDoors.map((entry) => ({ ...entry, gap: Math.hypot(entry.x - lift.x, entry.z - lift.z) })).sort((a, b) => a.gap - b.gap)[0]
+    if (!door || door.gap > 3) return null
+    const side = (door.x - lift.x) * door.d[1] - (door.z - lift.z) * door.d[0] >= 0 ? 1 : -1
+    return {
+      x: lift.x, z: lift.z, w: lift.w, d: lift.d, r: lift.r ?? 0,
+      at: [door.x, door.z], out: [side * door.d[1], -side * door.d[0]], half: door.half,
+      gate: {
+        ax: door.x - door.d[0] * door.half, az: door.z - door.d[1] * door.half,
+        bx: door.x + door.d[0] * door.half, bz: door.z + door.d[1] * door.half, r: door.r,
+      },
+    }
+  }).filter(Boolean)
+  return { segments, boxes, stairs, lifts, doors, rooms }
 }
 
 // The smallest box round everything a design has built, in lot metres.
@@ -1329,10 +817,10 @@ export function boundsOf(design) {
 export function frontDoors(design) {
   const shape = storeyShape(design, 0)
   if (!shape) return []
-  return shape.storey.openings.filter((entry) => isDoor(entry) && !shape.storey.walls[entry.w]?.rail).map((entry) => {
+  return shape.storey.openings.filter((entry) => isDoor(entry) && !isLift(entry) && !shape.storey.walls[entry.w]?.rail).map((entry) => {
     const wall = shape.storey.walls[entry.w]
     const side = shape.sides[entry.w]
-    if (side.l === side.r) return null
+    if (wall.open || side.l === side.r) return null
     const sign = side.l ? -1 : 1
     const normal = [sign * side.d[1], -sign * side.d[0]]
     const x = wall.a[0] + side.d[0] * entry.at

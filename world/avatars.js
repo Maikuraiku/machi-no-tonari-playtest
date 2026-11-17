@@ -3,10 +3,11 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm'
-import { controlStates, createAnimator, createControlInput, validProgram } from './animator.js?v=7'
-import { downloadAvatar } from './avatar-download.js?v=6'
-import { textTexture } from './kit.js'
-import { createTrackedRig, followTracking } from './tracking.js?v=7'
+import { controlStates, createAnimator, createControlInput, validProgram } from './animator.js?v=online-1794946480502'
+import { downloadAvatar } from './avatar-download.js?v=online-1794946480502'
+import { createFirstPersonBody, hideHead } from './first-person.js?v=online-1794946480502'
+import { textTexture } from './kit.js?v=online-1794946480502'
+import { FINGER_JOINTS, createTrackedRig, followTracking } from './tracking.js?v=online-1794946480502'
 
 const AVATAR_HEIGHT = 1.6
 const VRM_EMOTIONS = ['happy', 'angry', 'sad', 'relaxed', 'surprised']
@@ -151,6 +152,35 @@ function applyOutfit(actor, outfit, fallback) {
   }
 }
 
+const FINGER_NAMES = [['Thumb', /thumb/], ['Index', /index|pointer|forefinger/], ['Middle', /middle/], ['Ring', /ring/], ['Little', /little|pinky|pinkie/]]
+
+// The fingers hanging off a hand, found by their names: up to three joints each, knuckle first.
+function fingerBones(hand) {
+  const found = new Map()
+  const visit = (node, depth) => {
+    for (const child of node.children) {
+      if (!child.isBone) continue
+      const name = child.name.toLowerCase().replace(/[^a-z0-9]/g, '')
+      // 3ds Max Biped numbers the fingers from the thumb: Finger0 to Finger4.
+      const numbered = name.match(/finger([0-4])$/)
+      const finger = numbered ? FINGER_NAMES[Number(numbered[1])][0] : FINGER_NAMES.find(([, pattern]) => pattern.test(name))?.[0]
+      if (!finger) {
+        // Some rigs hang the fingers off a palm bone.
+        if (depth < 1) visit(child, depth + 1)
+        continue
+      }
+      if (found.has(finger)) continue
+      let chain = []
+      for (let at = child; at && chain.length < 4; at = at.children.find((next) => next.isBone)) chain.push(at)
+      // A finger's own metacarpal has no knuckle to bend (VRM counts only the thumb's).
+      if (finger !== 'Thumb' && /metacarpal|meta|palm/.test(name) && chain.length > 1) chain = chain.slice(1)
+      found.set(finger, chain.slice(0, 3))
+    }
+  }
+  if (hand) visit(hand, 0)
+  return found
+}
+
 // Swings the arms and legs of a model that has bones but is not a VRM.
 function modelRig(scene) {
   const bones = new Map()
@@ -176,6 +206,10 @@ function modelRig(scene) {
     humanoid[`${side}UpperLeg`] = leg
     humanoid[`${side}LowerLeg`] = findSide('lowerleg', 'leg', 'calf', 'shin', 'knee')
     humanoid[`${side}Foot`] = findSide('foot', 'ankle')
+    for (const [finger, chain] of fingerBones(humanoid[`${side}Hand`])) {
+      const joints = FINGER_JOINTS.find(([name]) => name === finger)[1]
+      chain.forEach((bone, at) => { humanoid[`${side}${finger}${joints[at]}`] = bone })
+    }
 
     for (const [bone, swing, child] of [[leg, sign * 0.82], [arm, -sign * 0.55, elbow]]) {
       if (!bone) continue
@@ -775,9 +809,30 @@ async function prepareAvatar(gltf, allowModel, { local, seed, signal }) {
   const springs = vrm?.humanoid ? [] : createSprings(scene)
   return {
     scene, vrm, rig, head, gimmick, animated, springs, tracking: createTrackedRig(scene, bone), eyeHeight: headHeight + crown * 0.25,
+    firstPerson: head ? eyesOf(vrm, head, headHeight, crown) : null,
     visibilityRadius: Math.max(4, size.length() * scale),
     sizing: { width: headWidth, height: crown + 0.04 },
   }
+}
+
+// Where a model's eyes are, for seeing its body from inside: their height at rest, and their
+// place from the head bone (turned with the head, in metres before any scaling).
+function eyesOf(vrm, head, headHeight, crown) {
+  const place = new THREE.Vector3()
+  const turn = new THREE.Quaternion()
+  head.updateWorldMatrix(true, false)
+  head.matrixWorld.decompose(place, turn, new THREE.Vector3())
+  let height = headHeight + crown * 0.25
+  const raw = vrm?.humanoid?.getRawBoneNode('head')
+  if (vrm?.lookAt && raw) {
+    // A VRM states where its eyes look from.
+    raw.updateWorldMatrix(true, false)
+    const look = vrm.lookAt.getLookAtWorldPosition(new THREE.Vector3())
+    if (look.y > headHeight && look.y < headHeight + crown) height = look.y
+  }
+  // Avatars face +Z, and the eyes are a little in front of the bone the head turns about.
+  const eye = new THREE.Vector3(place.x, height, place.z + THREE.MathUtils.clamp(crown * 0.45, 0.05, 0.16))
+  return { height, eye: eye.sub(place).applyQuaternion(turn.invert()) }
 }
 
 function makeLabel(text, theme) {
@@ -802,6 +857,8 @@ export function createAvatars(world, { onAvatarState, onAvatarLoad } = {}) {
   let localVRM = null
   let localRequest = 0
   let localHidden = false
+  // In VR: { pose, shown }, the headset and hands in the world and whether to show one's body.
+  let view = null
   let ceiling = null
   let lastSelf = null
   let lastOthers = []
@@ -953,6 +1010,7 @@ export function createAvatars(world, { onAvatarState, onAvatarLoad } = {}) {
           position: node.position.clone(),
           height: item.world.y ?? 0,
           blink: 2 + Math.random() * 3, mouth: 0,
+          viewKey: null,
         })
       }
       const actor = actors.get(id)
@@ -1046,9 +1104,86 @@ export function createAvatars(world, { onAvatarState, onAvatarLoad } = {}) {
     }
   }
 
+  // ---- Seen from inside, in VR ----------------------------------------------
+  //
+  // The wearer of a headset sees their own body from where their eyes are: its head is left out,
+  // it is as tall as they are, and its hands are where their hands are. An imported avatar is
+  // used as it is if it has a head and two whole arms; otherwise, as for the standard
+  // resident, a body of ordinary proportions in the resident's clothes stands in.
+
+  // Moves this screen's own resident into the view from inside, or back out of it. Returns
+  // 'model', 'body' or null.
+  function takeView(actor) {
+    const usable = Boolean(actor.model?.tracking?.complete && actor.model.firstPerson)
+    const mode = !view ? null : usable ? 'model' : 'body'
+    const key = mode && `${mode}|${actor.model?.scene.uuid ?? ''}`
+    if (actor.viewKey === key) return mode
+    actor.viewKey = key
+    actor.headView?.restore()
+    actor.headView = null
+    actor.node.scale.setScalar(1)
+    if (actor.body) actor.body.node.visible = false
+    actor.standard.visible = !actor.model
+    actor.modelAccessory.visible = true
+    if (actor.model) {
+      actor.model.scene.visible = true
+      actor.model.tracking?.reset()
+      actor.model.vrm?.springBoneManager?.reset()
+    }
+    if (!mode) return mode
+    actor.standard.visible = false
+    actor.modelAccessory.visible = false
+    if (mode === 'model') actor.headView = hideHead(actor.model)
+    else {
+      if (!actor.body) {
+        actor.body = createFirstPersonBody({ skin: paint('#eabe9f'), trousers: paint('#6f8492'), shoes: paint('#f2ede4') })
+        actor.node.add(actor.body.node)
+      }
+      actor.body.node.visible = true
+      if (actor.model) actor.model.scene.visible = false
+    }
+    return mode
+  }
+
+  const eyeNow = new THREE.Vector3()
+  const headPlace = new THREE.Vector3()
+  const headTurn = new THREE.Quaternion()
+  const headSize = new THREE.Vector3()
+
+  // Stands a body under the headset: turned as its wearer is, as tall as they are, crouching
+  // with them, and with its eyes where theirs are. Returns the scale it was given.
+  function standInside(actor, rig, eye, eyeHeight, pose) {
+    const { node } = actor
+    const scale = THREE.MathUtils.clamp(pose.standing / eyeHeight, 0.55, 1.8)
+    node.scale.setScalar(scale)
+    node.rotation.y = pose.yaw
+    node.position.set(pose.head.position.x, actor.height, pose.head.position.z)
+    node.updateMatrixWorld(true)
+    rig.body(pose, eyeHeight * scale)
+    rig.head.matrixWorld.decompose(headPlace, headTurn, headSize)
+    eyeNow.copy(eye).multiplyScalar(scale).applyQuaternion(headTurn).add(headPlace)
+    node.position.x += pose.head.position.x - eyeNow.x
+    node.position.z += pose.head.position.z - eyeNow.z
+    node.updateMatrixWorld(true)
+    return scale
+  }
+
+  function poseBody(actor, stride) {
+    const { body } = actor
+    const { pose } = view
+    body.dress(actor.standard.userData.shirt.material)
+    body.rig.reset()
+    body.walk(stride)
+    const scale = standInside(actor, body.rig, body.eye, body.height, pose)
+    body.reach(pose, scale)
+    body.rig.arms(pose, true)
+    body.curl(pose)
+  }
+
   function update(delta, elapsed, camera) {
     for (const actor of actors.values()) {
       const node = actor.node
+      const inside = actor.self ? takeView(actor) : null
       if (!actor.self) {
         actor.tracked = followTracking(actor.tracked, actor.trackingTarget, delta)
         // Other residents glide towards where the server last saw them.
@@ -1073,7 +1208,7 @@ export function createAvatars(world, { onAvatarState, onAvatarLoad } = {}) {
       const stride = walking ? Math.sin(actor.stride) * 0.55 : 0
       // Other residents climb to the storey they were last seen on; this screen's own is placed by the scene.
       if (!actor.self) actor.height += (actor.target.y - actor.height) * (1 - Math.exp(-24 * delta))
-      node.position.y = actor.height + (walking && !actor.tracked ? Math.abs(Math.sin(actor.stride)) * 0.05 : 0)
+      node.position.y = actor.height + (walking && !actor.tracked && !inside ? Math.abs(Math.sin(actor.stride)) * 0.05 : 0)
       // Lip sync follows how loudly this resident is speaking.
       const loud = levels.get(actor.id) ?? 0
       actor.mouth += (loud - actor.mouth) * (1 - Math.exp(-18 * delta))
@@ -1088,16 +1223,17 @@ export function createAvatars(world, { onAvatarState, onAvatarLoad } = {}) {
       avatarBounds.radius = radius
       const offscreen = camera.frustum ? !camera.frustum.intersectsSphere(avatarBounds)
         : camera.direction && toViewer.subVectors(camera.position, node.position).dot(camera.direction) > radius
-      node.visible = !(actor.self && localHidden) && !above && !offscreen
+      // From inside, one's own name tag would hang overhead.
+      node.visible = inside ? view.shown : !(actor.self && localHidden) && !above && !offscreen
       const label = actor.label
-      label.visible = node.visible
+      label.visible = node.visible && !inside
       if (!node.visible) {
         actor.model?.tracking?.reset()
         updateAnimator(actor, delta, wide, round)
         continue
       }
 
-      if (!actor.model) {
+      if (!actor.model && !inside) {
         const standard = actor.standard.userData
         standard.tracking.reset()
         for (const [index, leg] of standard.legs.entries()) {
@@ -1123,7 +1259,7 @@ export function createAvatars(world, { onAvatarState, onAvatarLoad } = {}) {
             manager.setValue('oh', round)
             manager.setValue('blink', closed)
           }
-          if (!actor.tracked) vrm.update(delta)
+          if (!actor.tracked && inside !== 'model') vrm.update(delta)
         }
         updateAnimator(actor, delta, wide, round)
         const { animated } = actor.model
@@ -1136,12 +1272,18 @@ export function createAvatars(world, { onAvatarState, onAvatarLoad } = {}) {
           const weight = !speaking ? 0 : sound === 'aa' ? wide : sound === 'oh' || sound === 'ou' ? round : 0
           for (const slot of slots) slot.influences[slot.index] = Math.max(holding(slot) ?? 0, weight)
         }
-        if (actor.tracked) {
+        if (inside === 'model') {
+          const { firstPerson } = actor.model
+          standInside(actor, tracking, firstPerson.eye, firstPerson.height, view.pose)
+          tracking.arms(view.pose, true)
+          actor.headView?.sync()
+          vrm?.update(delta)
+        } else if (actor.tracked) {
           tracking?.apply(actor.tracked, eyeHeight)
           vrm?.update(delta)
         }
         if (springs.length) updateSprings(springs, delta)
-        if (head && actor.modelAccessory.children.length) {
+        if (head && actor.modelAccessory.children.length && !inside) {
           head.getWorldPosition(headPoint)
           actor.modelAccessory.position.copy(node.worldToLocal(headPoint))
           if (!rig || actor.tracked) {
@@ -1151,6 +1293,7 @@ export function createAvatars(world, { onAvatarState, onAvatarLoad } = {}) {
           }
         }
       }
+      if (inside === 'body') poseBody(actor, stride)
 
       const tall = (actor.model ? AVATAR_HEIGHT : 1.62) + 0.34
       label.position.set(node.position.x, node.position.y + tall, node.position.z)
@@ -1179,6 +1322,11 @@ export function createAvatars(world, { onAvatarState, onAvatarLoad } = {}) {
     },
     setLocalHidden(hidden) {
       localHidden = hidden
+    },
+    // In VR, this screen's own resident is seen from inside (see takeView): `next` is
+    // { pose, shown } every frame, or null outside VR.
+    setFirstPerson(next) {
+      view = next
     },
     // Hides residents above height `y` inside the box given, or nobody with null.
     setCeiling(value) {

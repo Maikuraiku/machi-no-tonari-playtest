@@ -2,7 +2,11 @@
 import * as THREE from 'three'
 import { Sky } from 'three/addons/objects/Sky.js'
 import { Water } from 'three/addons/objects/Water.js'
-import { Batch, TILE, disposeGroup, fbm, glass, glow, hash, material, waterNormals } from './kit.js'
+import { Batch, TILE, disposeGroup, fbm, glass, glow, hash, material, waterNormals } from './kit.js?v=online-1794946480502'
+import { createClouds } from './clouds.js?v=online-1794946480502'
+import { createGrass } from './grass.js?v=online-1794946480502'
+import { drawPoles, manholeMesh, stopLegends } from './street.js?v=online-1794946480502'
+import { createTrees } from './trees.js?v=online-1794946480502'
 
 const SEA_LEVEL = -1.7
 const ROAD_HALF = 2.9 // half the width of the carriageway; the rest of a road tile is pavement
@@ -10,7 +14,9 @@ const KERB = 0.15
 const HORIZON = '#c8d6de'
 
 export function createEnvironment(scene, renderer) {
-  const sunDirection = new THREE.Vector3().setFromSphericalCoords(1, THREE.MathUtils.degToRad(90 - 40), THREE.MathUtils.degToRad(-128))
+  // The sun of an early afternoon: in the south-south-west (south is +z, west is -x), a little
+  // under half way up the sky. Houses in Japan face south, so their fronts stand in the sun.
+  const sunDirection = new THREE.Vector3().setFromSphericalCoords(1, THREE.MathUtils.degToRad(90 - 44), THREE.MathUtils.degToRad(-36))
   const sky = new Sky()
   sky.scale.setScalar(4000)
   const uniforms = sky.material.uniforms
@@ -24,19 +30,30 @@ export function createEnvironment(scene, renderer) {
   const pmrem = new THREE.PMREMGenerator(renderer)
   const skyScene = new THREE.Scene()
   skyScene.add(sky)
+  // Below the horizon lies the ground, far darker than the sky: what faces down, or stands in
+  // the shade, gets little light from there.
+  const land = new THREE.Mesh(new THREE.CircleGeometry(95, 48),
+    new THREE.MeshBasicMaterial({ color: new THREE.Color().setRGB(0.2, 0.21, 0.17), side: THREE.DoubleSide }))
+  land.rotation.x = -Math.PI / 2
+  land.position.y = -1.2
+  skyScene.add(land)
   const environment = pmrem.fromScene(skyScene, 0.02)
+  land.geometry.dispose()
+  land.material.dispose()
   scene.environment = environment.texture
-  scene.environmentIntensity = 0.6
+  scene.environmentIntensity = 0.55
   scene.add(sky)
+  const clouds = createClouds(sunDirection)
+  scene.add(clouds.mesh)
   scene.fog = new THREE.Fog(HORIZON, 260, 2600)
 
-  const sun = new THREE.DirectionalLight('#fff1dc', 4.2)
+  const sun = new THREE.DirectionalLight('#fff1dc', 5.2)
   sun.castShadow = true
   sun.shadow.bias = -0.0004
   sun.shadow.normalBias = 0.06
   scene.add(sun)
   scene.add(sun.target)
-  const ambient = new THREE.HemisphereLight('#d6e4f3', '#8a8474', 0.7)
+  const ambient = new THREE.HemisphereLight('#d6e4f3', '#8a8474', 0.22)
   scene.add(ambient)
 
   const sea = new THREE.Group()
@@ -100,22 +117,25 @@ export function createEnvironment(scene, renderer) {
 
   const ground = new THREE.Group()
   scene.add(ground)
-  const trees = new THREE.Group()
+  const forest = createTrees()
+  const trees = forest.group
   scene.add(trees)
-  const trunkGeometry = new THREE.CylinderGeometry(0.13, 0.22, 1, 7)
-  trunkGeometry.translate(0, 0.5, 0)
-  const crownGeometry = new THREE.IcosahedronGeometry(1, 1)
-  const trunkMaterial = new THREE.MeshStandardMaterial({ color: '#6b5642', roughness: 1 })
-  const crownMaterial = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.95 })
+  const meadow = createGrass()
+  scene.add(meadow.mesh)
+  let meadowWanted = true
   let groundKey = ''
+  // What glass reflects of the surroundings: the trees as balls of leaves, and a small picture
+  // of the ground from above.
+  let leafBalls = []
+  let groundPicture = null
 
   // Draws everything that sits on the ground. `free(x, z)` says whether a tile is open land.
-  function drawTown(town, blocked) {
-    const key = JSON.stringify([town.width, town.height, town.originX, town.originZ, town.plaza, town.roads, [...blocked].sort()])
+  // `clearOf`: strips where nothing may grow, as [{ ax, az, bx, bz, r }] (the way of a monorail).
+  function drawTown(town, blocked, clearOf = []) {
+    const key = JSON.stringify([town.width, town.height, town.originX, town.originZ, town.plaza, town.roads, [...blocked].sort(), clearOf])
     if (key === groundKey) return
     groundKey = key
     disposeGroup(ground)
-    disposeGroup(trees)
 
     const batch = new Batch()
     const worldX = (x) => (x - town.originX) * TILE
@@ -150,11 +170,38 @@ export function createEnvironment(scene, renderer) {
     const roads = new Set(town.roads.map(({ x, z }) => `${x},${z}`))
     const plazaKey = `${town.plaza.x},${town.plaza.z}`
     const paved = (x, z) => roads.has(`${x},${z}`) || `${x},${z}` === plazaKey
+    {
+      const scale = 8
+      const canvas = document.createElement('canvas')
+      canvas.width = town.width * scale
+      canvas.height = town.height * scale
+      const picture = canvas.getContext('2d')
+      picture.fillStyle = '#5d7b3c'
+      picture.fillRect(0, 0, canvas.width, canvas.height)
+      for (const { x, z } of town.roads) {
+        picture.fillStyle = '#b7b4aa'
+        picture.fillRect(x * scale, z * scale, scale, scale)
+        picture.fillStyle = '#4a4d4f'
+        picture.fillRect(x * scale + (paved(x - 1, z) ? 0 : 1), z * scale + (paved(x, z - 1) ? 0 : 1),
+          scale - (paved(x - 1, z) ? 0 : 1) - (paved(x + 1, z) ? 0 : 1), scale - (paved(x, z - 1) ? 0 : 1) - (paved(x, z + 1) ? 0 : 1))
+      }
+      picture.fillStyle = '#c4bca8'
+      picture.fillRect(town.plaza.x * scale, town.plaza.z * scale, scale, scale)
+      groundPicture?.map.dispose()
+      const map = new THREE.CanvasTexture(canvas)
+      map.colorSpace = THREE.SRGBColorSpace
+      groundPicture = { map, x0: west, z0: north, width: east - west, depth: south - north }
+    }
     const asphalt = material('asphalt')
     const pavement = material('sidewalk', '#e2e0d8')
     const kerb = material('concrete', '#bdbbb3')
     const paint = material('#e6e3d6', '#ffffff', { roughness: 0.7 })
+    const gutter = material('concrete', '#c7c5be')
+    const grating = material('#3b3e3f', '#ffffff', { roughness: 0.5, metalness: 0.6 })
+    const drain = material('#141617', '#ffffff', { roughness: 0.9 })
     const poleSpots = []
+    const manholes = []
+    const legends = []
 
     for (const { x, z } of town.roads) {
       if (`${x},${z}` === plazaKey) continue
@@ -185,23 +232,86 @@ export function createEnvironment(scene, renderer) {
       }
       const straightZ = links[0] && links[2] && !links[1] && !links[3]
       const straightX = links[1] && links[3] && !links[0] && !links[2]
-      if (straightZ || straightX) {
-        for (const offset of [-2, 2]) {
-          batch.slab(paint, cx + (straightX ? offset - 0.9 : -0.07), cz + (straightZ ? offset - 0.9 : -0.07),
-            cx + (straightX ? offset + 0.9 : 0.07), cz + (straightZ ? offset + 0.9 : 0.07), 0.045)
+      const SIDES = [[0, -1], [1, 0], [0, 1], [-1, 0]]
+      // The L-shaped gutter along every kerb: an apron of concrete 0.35 m wide on the road side,
+      // along the sides of the road and round the corners of a junction.
+      const lip = ROAD_HALF - 0.08
+      SIDES.forEach(([dx, dz], index) => {
+        if (!links[index]) {
+          if (dx) batch.slab(gutter, cx + dx * lip - (dx > 0 ? 0.35 : 0), cz - TILE / 2, cx + dx * lip + (dx < 0 ? 0.35 : 0), cz + TILE / 2, 0.033)
+          else batch.slab(gutter, cx - TILE / 2, cz + dz * lip - (dz > 0 ? 0.35 : 0), cx + TILE / 2, cz + dz * lip + (dz < 0 ? 0.35 : 0), 0.033)
+          return
         }
-        if ((x + z) % 2 === 0) poleSpots.push({ x: cx + (straightZ ? 3.5 : 0), z: cz + (straightX ? 3.5 : 0), alongX: straightX })
-      } else if (links.filter(Boolean).length >= 3) {
-        // Zebra crossings mark each arm of a junction.
-        for (const [index, [dx, dz]] of [[0, -1], [1, 0], [0, 1], [-1, 0]].entries()) {
-          if (!links[index]) continue
-          for (let stripe = -2; stripe <= 2; stripe++) {
-            const along = stripe * 0.95
-            const px = cx + dx * 2.2 + (dx ? 0 : along)
-            const pz = cz + dz * 2.2 + (dz ? 0 : along)
-            batch.slab(paint, px - (dx ? 0.5 : 0.24), pz - (dz ? 0.5 : 0.24), px + (dx ? 0.5 : 0.24), pz + (dz ? 0.5 : 0.24), 0.045)
+        // An arm of the junction: its kerbs are the faces of the corner pavements.
+        for (const side of [-1, 1]) {
+          if (dx) batch.slab(gutter, cx + dx * ROAD_HALF - (dx > 0 ? 0 : TILE / 2 - ROAD_HALF), cz + side * lip - (side > 0 ? 0.35 : 0), cx + dx * ROAD_HALF + (dx > 0 ? TILE / 2 - ROAD_HALF : 0), cz + side * lip + (side < 0 ? 0.35 : 0), 0.033)
+          else batch.slab(gutter, cx + side * lip - (side > 0 ? 0.35 : 0), cz + dz * ROAD_HALF - (dz > 0 ? 0 : TILE / 2 - ROAD_HALF), cx + side * lip + (side < 0 ? 0.35 : 0), cz + dz * ROAD_HALF + (dz > 0 ? TILE / 2 - ROAD_HALF : 0), 0.033)
+        }
+      })
+      if (straightZ || straightX) {
+        // The centre line: 150 mm wide, broken into 5 m of paint and 5 m of gap (counted along
+        // the whole road, so that the dashes run on from one stretch to the next).
+        const middle = straightZ ? cz : cx
+        for (let start = Math.floor((middle - TILE / 2) / 10) * 10; start < middle + TILE / 2; start += 10) {
+          const from = Math.max(start, middle - TILE / 2)
+          const to = Math.min(start + 5, middle + TILE / 2)
+          if (to - from < 0.05) continue
+          if (straightZ) batch.slab(paint, cx - 0.075, from, cx + 0.075, to, 0.045)
+          else batch.slab(paint, from, cz - 0.075, to, cz + 0.075, 0.045)
+        }
+        // A drain under a grating in the gutter, about every 24 m, on alternate sides.
+        const along = straightZ ? z : x
+        if (((along % 3) + 3) % 3 === 1) {
+          const side = ((Math.floor(along / 3) % 2) + 2) % 2 ? 1 : -1
+          const [gx, gz] = straightZ ? [cx + side * (lip - 0.2), cz] : [cx, cz + side * (lip - 0.2)]
+          batch.box(grating, gx, 0.033, gz, straightZ ? 0.4 : 0.5, 0.012, straightZ ? 0.5 : 0.4)
+          for (let bar = -0.2; bar <= 0.2; bar += 0.033) {
+            batch.box(drain, gx + (straightZ ? 0 : bar), 0.035, gz + (straightZ ? bar : 0), straightZ ? 0.36 : 0.012, 0.004, straightZ ? 0.012 : 0.36)
           }
         }
+        // A manhole now and then in the middle of a lane.
+        if (hash(x + 3, z + 11, 5) < 0.28) manholes.push({ x: cx + (straightZ ? 1.45 * (hash(x, z, 6) < 0.5 ? -1 : 1) : 0), z: cz + (straightX ? 1.45 * (hash(x, z, 6) < 0.5 ? -1 : 1) : 0), turn: hash(x, z, 7) * 6 })
+        // A utility pole on the pavement about every 32 m.
+        if (((along % 4) + 4) % 4 === 0) {
+          poleSpots.push({ x: cx + (straightZ ? 3.58 : 0), z: cz + (straightX ? 3.58 : 0), alongX: straightX, along: straightX ? [1, 0] : [0, 1], across: straightX ? [0, -1] : [-1, 0] })
+        }
+      } else if (links.filter(Boolean).length >= 3) {
+        // Every junction has a manhole under its middle.
+        manholes.push({ x: cx, z: cz, turn: hash(x, z, 8) * 6 })
+        const crossing = links.every(Boolean)
+        SIDES.forEach(([dx, dz], index) => {
+          if (!links[index]) return
+          // A crossroads has zebra crossings on its arms: bars 450 mm wide and 450 apart,
+          // 4 m long, starting 0.5 m out from the junction.
+          if (crossing) {
+            for (let across = -ROAD_HALF + 0.75; across <= ROAD_HALF - 0.7; across += 0.9) {
+              const near = ROAD_HALF + 0.5
+              const far = near + 4
+              if (dx) batch.slab(paint, cx + dx * (dx > 0 ? near : far), cz + across - 0.225, cx + dx * (dx > 0 ? far : near), cz + across + 0.225, 0.045)
+              else batch.slab(paint, cx + across - 0.225, cz + dz * (dz > 0 ? near : far), cx + across + 0.225, cz + dz * (dz > 0 ? far : near), 0.045)
+            }
+          }
+          // Traffic on the north-south roads gives way: a stop line 450 mm wide across the lane
+          // that comes to the junction (on the left, as traffic keeps to the left), and
+          // 「止まれ」 behind it, where the road runs straight for long enough.
+          if (dx) return
+          const ahead = (steps) => {
+            const tx = x
+            const tz = z + dz * steps
+            const next = [[0, -1], [1, 0], [0, 1], [-1, 0]].map(([ex, ez]) => paved(tx + ex, tz + ez))
+            return paved(tx, tz) && next[0] && next[2] && !next[1] && !next[3]
+          }
+          if (!ahead(1)) return
+          const stop = (crossing ? ROAD_HALF + 4.5 : ROAD_HALF) + 1.5
+          const lane = -dz
+          const [x0, x1] = lane > 0 ? [cx + 0.1, cx + lip - 0.35] : [cx - lip + 0.35, cx - 0.1]
+          batch.slab(paint, x0, cz + dz * (dz > 0 ? stop : stop + 0.45), x1, cz + dz * (dz > 0 ? stop + 0.45 : stop), 0.045)
+          // (The legend reaches some 12 m back from the middle of the junction: into the next tile.)
+          if (paved(x, z + dz * 2)) {
+            const centre = stop + 0.45 + 1.5 + 3
+            legends.push({ x: (x0 + x1) / 2, z: cz + dz * centre, turn: Math.atan2(0, -dz) })
+          }
+        })
       }
     }
 
@@ -224,41 +334,47 @@ export function createEnvironment(scene, renderer) {
       }
     }
     const lampSpots = [[px - 3.4, pz - 3.4], [px + 3.4, pz + 3.4], [px + 3.4, pz - 3.4], [px - 3.4, pz + 3.4]]
-    for (const spot of poleSpots) {
-      if (hash(spot.x, spot.z) > 0.5) lampSpots.push([spot.x + (spot.alongX ? 0 : -7), spot.z + (spot.alongX ? -7 : 0)])
-    }
     for (const [lx, lz] of lampSpots) {
       batch.cylinder(iron, lx, 0, lz, 0.09, 4.3, 8, 0.06)
       batch.cylinder(iron, lx, 4.3, lz, 0.32, 0.1, 8, 0.16)
       batch.cylinder(glow('#fff1cf', 0.9), lx, 4.05, lz, 0.2, 0.25, 8)
     }
 
-    // Utility poles carry wires along the straight roads.
-    const pole = material('concrete', '#b9b6ad')
-    const wirePoints = []
+    // Utility poles carry the lines along the roads: each pole is joined to the next one along
+    // the same line, up to 40 m on (across a junction too); a pole at the end of a line is held
+    // by a stay; every other pole carries a transformer, some a street light.
+    const spans = []
+    const lines = new Map()
+    // Nothing stands or is strung in the way of a monorail.
+    const clearOfLine = (px, pz, room) => clearOf.every(({ ax, az, bx, bz, r }) => {
+      const [ex, ez] = [bx - ax, bz - az]
+      const t = Math.min(1, Math.max(0, ((px - ax) * ex + (pz - az) * ez) / (ex * ex + ez * ez || 1)))
+      return Math.hypot(px - ax - ex * t, pz - az - ez * t) > r + room
+    })
+    for (let index = poleSpots.length - 1; index >= 0; index--) if (!clearOfLine(poleSpots[index].x, poleSpots[index].z, 1.5)) poleSpots.splice(index, 1)
     for (const spot of poleSpots) {
-      batch.cylinder(pole, spot.x, 0, spot.z, 0.17, 8.6, 8, 0.11)
-      batch.box(iron, spot.x, 7.7, spot.z, spot.alongX ? 0.1 : 1.7, 0.1, spot.alongX ? 1.7 : 0.1)
-      batch.box(iron, spot.x, 6.9, spot.z, spot.alongX ? 0.1 : 1.2, 0.09, spot.alongX ? 1.2 : 0.09)
-      batch.cylinder(material('#6d6f6a'), spot.x + (spot.alongX ? 0 : 0.36), 5.6, spot.z + (spot.alongX ? 0.36 : 0), 0.24, 0.62, 8)
+      const key = spot.alongX ? `x|${spot.z.toFixed(2)}` : `z|${spot.x.toFixed(2)}`
+      if (!lines.has(key)) lines.set(key, [])
+      lines.get(key).push(spot)
     }
-    for (const from of poleSpots) {
-      const to = poleSpots.find((other) => other !== from && other.alongX === from.alongX
-        && (from.alongX ? other.z === from.z && other.x - from.x === TILE * 2 : other.x === from.x && other.z - from.z === TILE * 2))
-      if (!to) continue
-      for (const [offset, height] of [[-0.78, 7.78], [0.78, 7.78], [0, 6.97]]) {
-        for (let step = 0; step < 8; step++) {
-          for (const t of [step / 8, (step + 1) / 8]) {
-            wirePoints.push(
-              from.x + (to.x - from.x) * t + (from.alongX ? 0 : offset),
-              height - Math.sin(t * Math.PI) * 0.42,
-              from.z + (to.z - from.z) * t + (from.alongX ? offset : 0),
-            )
-          }
-        }
-      }
+    for (const line of lines.values()) {
+      line.sort((p, q) => (p.alongX ? p.x - q.x : p.z - q.z))
+      line.forEach((spot, index) => {
+        const next = line[index + 1]
+        const gap = next ? Math.hypot(next.x - spot.x, next.z - spot.z) : Infinity
+        const clear = next && [0.2, 0.4, 0.6, 0.8].every((t) => clearOfLine(spot.x + (next.x - spot.x) * t, spot.z + (next.z - spot.z) * t, 0))
+        if (gap <= 40 && clear) spans.push([spot, next])
+        spot.transformer = index % 2 === 0
+        spot.light = hash(spot.x, spot.z, 9) > 0.45
+        const before = index > 0 && spans.some(([, end]) => end === spot)
+        spot.stay = !before ? -1 : !(gap <= 40 && clear) ? 1 : 0
+      })
     }
-    batch.build(ground)
+    drawPoles(batch, poleSpots, spans)
+    const wirePoints = []
+    batch.build(ground, { where: 'out' })
+    if (manholes.length) ground.add(manholeMesh(manholes))
+    if (legends.length) ground.add(stopLegends(legends))
     if (wirePoints.length) {
       const geometry = new THREE.BufferGeometry()
       geometry.setAttribute('position', new THREE.Float32BufferAttribute(wirePoints, 3))
@@ -287,38 +403,22 @@ export function createEnvironment(scene, renderer) {
         }
       }
     }
-    if (spots.length) {
-      const trunks = new THREE.InstancedMesh(trunkGeometry, trunkMaterial, spots.length)
-      const crowns = new THREE.InstancedMesh(crownGeometry, crownMaterial, spots.length * 3)
-      const matrix = new THREE.Matrix4()
-      const turn = new THREE.Quaternion()
-      const color = new THREE.Color()
-      for (const [index, spot] of spots.entries()) {
-        const trunkHeight = 2.3 * spot.size + 0.8
-        matrix.compose(new THREE.Vector3(spot.x, 0, spot.z), turn.identity(), new THREE.Vector3(spot.size, trunkHeight, spot.size))
-        trunks.setMatrixAt(index, matrix)
-        for (let blob = 0; blob < 3; blob++) {
-          const spread = blob ? 0.85 * spot.size : 0
-          const angle = hash(index, blob) * Math.PI * 2
-          const radius = (blob ? 1.25 : 1.75) * spot.size
-          turn.setFromEuler(new THREE.Euler(hash(index, blob, 2) * 3, hash(index, blob, 3) * 3, 0))
-          matrix.compose(
-            new THREE.Vector3(spot.x + Math.cos(angle) * spread, trunkHeight + radius * 0.55 + (blob ? -0.45 : 0.25) * spot.size, spot.z + Math.sin(angle) * spread),
-            turn, new THREE.Vector3(radius, radius * 0.86, radius),
-          )
-          crowns.setMatrixAt(index * 3 + blob, matrix)
-          const autumn = spot.kind > 0.9
-          color.setHSL(autumn ? 0.08 + hash(index, 7) * 0.04 : 0.25 + hash(index, blob, 8) * 0.07, autumn ? 0.55 : 0.42 + hash(index, 9) * 0.14, (autumn ? 0.26 : 0.17) + hash(index, blob, 10) * 0.07)
-          crowns.setColorAt(index * 3 + blob, color)
-        }
-      }
-      for (const mesh of [trunks, crowns]) {
-        mesh.castShadow = true
-        mesh.receiveShadow = true
-        mesh.frustumCulled = false
-        trees.add(mesh)
-      }
-    }
+    // Nothing grows in the way of the monorail.
+    const offLine = (spot) => clearOf.every(({ ax, az, bx, bz, r }) => {
+      const [ex, ez] = [bx - ax, bz - az]
+      const t = Math.min(1, Math.max(0, ((spot.x - ax) * ex + (spot.z - az) * ez) / (ex * ex + ez * ez || 1)))
+      return Math.hypot(spot.x - ax - ex * t, spot.z - az - ez * t) > r + 1.8 * spot.size
+    })
+    spots.splice(0, spots.length, ...spots.filter(offLine))
+    leafBalls = spots.map((spot) => ({ x: spot.x, y: 3.4 * spot.size + 0.8, z: spot.z, r: 1.7 * spot.size }))
+    forest.plant(spots)
+    // Grass grows on the open land: not on roads, the plaza or anybody's lot.
+    const taken = new Set(blocked)
+    meadow.setGround((x, z) => {
+      const tx = Math.round(x / TILE + town.originX)
+      const tz = Math.round(z / TILE + town.originZ)
+      return tx >= 0 && tz >= 0 && tx < town.width && tz < town.height && !paved(tx, tz) && !taken.has(`${tx},${tz}`)
+    })
   }
 
   function setQuality(quality) {
@@ -336,6 +436,7 @@ export function createEnvironment(scene, renderer) {
     sun.shadow.camera.updateProjectionMatrix()
     sun.userData.reach = reach
     setSea(quality === 'high')
+    meadowWanted = quality !== 'low'
     scene.traverse((node) => {
       if (node.material) node.material.needsUpdate = true
     })
@@ -349,6 +450,11 @@ export function createEnvironment(scene, renderer) {
     sky.position.set(focus.x, 0, focus.z)
     range.position.set(focus.x * 0.9, 0, focus.z * 0.9)
     sea.position.set(Math.round(focus.x / 40) * 40, 0, Math.round(focus.z / 40) * 40)
+    forest.update(delta)
+    clouds.update(delta, focus)
+    // (A headset draws every frame twice: the grass is left out there.)
+    meadow.setShown(meadowWanted && !immersive)
+    meadow.update(delta, focus)
     // Water renders the scene again for its reflection. Keep that pass out of immersive frames.
     const showReflection = reflections && !immersive
     plainSea.visible = !showReflection
@@ -360,13 +466,17 @@ export function createEnvironment(scene, renderer) {
 
   return {
     sun, ambient, sunDirection, drawTown, setQuality, update,
+    trees: () => leafBalls,
+    groundMap: () => groundPicture,
     // Indoors the town is hidden, but its light keeps coming through the windows.
     setOutdoors(visible) {
       for (const group of [ground, trees, sea, range]) group.visible = visible
     },
     dispose() {
       disposeGroup(ground)
-      disposeGroup(trees)
+      forest.dispose()
+      meadow.dispose()
+      clouds.dispose()
       seaGeometry.dispose()
       plainSea.material.dispose()
       water?.material.dispose()
