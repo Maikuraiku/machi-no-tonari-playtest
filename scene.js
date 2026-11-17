@@ -148,6 +148,9 @@ export function initScene(container, callbacks = {}) {
   let pointerLocked = false
   let xrYaw = 0
   let xrTurned = false
+  let xrHeading = 0
+  let xrBodyYaw = null
+  let xrPose = null
   // The building the player stands in (null in the street), and what was last told to the app.
   let home = null
   let placeKey = ''
@@ -342,16 +345,35 @@ export function initScene(container, callbacks = {}) {
     here.y = 0
   }
 
+  const residentSpot = (resident) => ({
+    x: (resident.x - local.ox) * TILE, y: resident.y ?? 0, z: (resident.z - local.oz) * TILE, place: 'town',
+  })
+
   function syncActors() {
     const { player } = state
     if (!player || !local.ready) return
     others.length = 0
     const residents = (state.players ?? []).map((resident) => {
-      const spot = { x: (resident.x - local.ox) * TILE, y: resident.y ?? 0, z: (resident.z - local.oz) * TILE, place: 'town' }
+      const spot = residentSpot(resident)
       others.push(spot)
       return { ...resident, world: spot }
     })
     avatars.sync({ ...player, world: { x: here.x, y: here.y, z: here.z, place: 'town' } }, residents)
+  }
+
+  function updatePresence(players) {
+    if (!local.ready || !state.players?.length || !players.length) return
+    const locations = new Map(players.map((player) => [player.id, player]))
+    others.length = 0
+    const residents = state.players.map((resident) => {
+      const location = locations.get(resident.id)
+      const next = location && (location.warp ?? 0) >= (resident.warp ?? 0) ? { ...resident, ...location } : resident
+      const spot = residentSpot(next)
+      others.push(spot)
+      if (next !== resident) avatars.updatePresence(next, spot)
+      return next
+    })
+    state = { ...state, players: residents }
   }
 
   function drawMarkers() {
@@ -497,11 +519,7 @@ export function initScene(container, callbacks = {}) {
   }
 
   function heading() {
-    if (immersive()) {
-      camera.getWorldDirection(forward)
-      return Math.atan2(-forward.x, -forward.z)
-    }
-    return yaw
+    return immersive() ? xrHeading : yaw
   }
 
   function move(delta, inputX, inputY) {
@@ -591,11 +609,12 @@ export function initScene(container, callbacks = {}) {
     return true
   }
 
-  function report(now) {
-    if (!local.ready || designing() || now - lastReport < 200) return
-    const position = { x: Math.round(local.x * 100) / 100, z: Math.round(local.z * 100) / 100, y: Math.round(here.y * 100) / 100 }
-    const key = `${position.x},${position.z},${position.y}`
-    if (key === lastSent) return
+  function report(now, force = false) {
+    if (!local.ready || (!force && ((!xrPose && designing()) || now - lastReport < 50))) return
+    const position = { x: Math.round(local.x * 1000) / 1000, z: Math.round(local.z * 1000) / 1000,
+      y: Math.round(here.y * 1000) / 1000, warp: local.warp, pose: xrPose }
+    const key = JSON.stringify(position)
+    if (key === lastSent && (!xrPose || now - lastReport < 1000)) return
     lastSent = key
     lastReport = now
     callbacks.onMove?.(position)
@@ -885,6 +904,40 @@ export function initScene(container, callbacks = {}) {
 
   // ---- VR -------------------------------------------------------------------
 
+  const xrUp = new THREE.Vector3(0, 1, 0)
+  const xrOrientation = new THREE.Quaternion()
+  const trackedRotation = new THREE.Quaternion()
+  const trackedPosition = new THREE.Vector3()
+  const trackedDirection = new THREE.Vector3()
+
+  function readTracking(frame, delta) {
+    const reference = renderer.xr.getReferenceSpace()
+    const viewer = frame && reference && frame.getViewerPose(reference)
+    if (!viewer) return null
+    xrOrientation.setFromAxisAngle(xrUp, xrYaw)
+    const pack = ({ position, orientation }) => {
+      trackedPosition.set(position.x, position.y, position.z).applyQuaternion(xrOrientation)
+      trackedRotation.set(orientation.x, orientation.y, orientation.z, orientation.w).premultiply(xrOrientation)
+      return [...trackedPosition, ...trackedRotation].map((value) => Math.round(value * 1000) / 1000)
+    }
+    const head = pack(viewer.transform)
+    trackedDirection.set(0, 0, -1).applyQuaternion(trackedRotation)
+    if (Math.hypot(trackedDirection.x, trackedDirection.z) > 0.08) xrHeading = Math.atan2(-trackedDirection.x, -trackedDirection.z)
+    const face = xrHeading + Math.PI
+    const turn = Math.atan2(Math.sin(face - (xrBodyYaw ?? face)), Math.cos(face - (xrBodyYaw ?? face)))
+    xrBodyYaw = face - THREE.MathUtils.clamp(turn * Math.exp(-5 * delta), -1.05, 1.05)
+    const pose = { yaw: Math.atan2(Math.sin(xrBodyYaw), Math.cos(xrBodyYaw)), head, left: null, right: null }
+    for (const source of frame.session.inputSources) {
+      const side = source.handedness
+      if (side !== 'left' && side !== 'right') continue
+      const wrist = source.hand?.get('wrist')
+      const handPose = wrist ? frame.getJointPose?.(wrist, reference)
+        : source.gripSpace && frame.getPose(source.gripSpace, reference)
+      if (handPose) pose[side] = pack(handPose.transform)
+    }
+    return pose
+  }
+
   const hands = [0, 1].map((index) => {
     const hand = renderer.xr.getController(index)
     const ray = new THREE.Line(
@@ -932,10 +985,15 @@ export function initScene(container, callbacks = {}) {
 
   renderer.xr.addEventListener('sessionstart', () => {
     xrYaw = yaw
+    xrHeading = yaw
+    xrBodyYaw = null
+    xrTurned = false
     avatars.setLocalHidden(true)
     callbacks.onVR?.(true)
   })
   renderer.xr.addEventListener('sessionend', () => {
+    xrPose = null
+    report(performance.now(), true)
     avatars.setLocalHidden(firstPerson())
     snapCamera = true
     camera.fov = 55
@@ -956,11 +1014,13 @@ export function initScene(container, callbacks = {}) {
   const observer = new ResizeObserver(resize)
   observer.observe(container)
 
-  function frame(time) {
+  function frame(time, xrFrame) {
     const delta = Math.min(0.08, Math.max(0.001, (time - lastTime) / 1000))
     lastTime = time
     elapsed += delta
     const [handX, handY] = immersive() ? readHands() : [0, 0]
+    const previousPose = xrPose
+    xrPose = immersive() ? readTracking(xrFrame, delta) : null
     const [inputX, inputY] = readInput()
     if (mode === 'overview' && state.edit && !home && !immersive()) {
       // While editing the town from above, the keys slide the map instead of the resident.
@@ -969,7 +1029,7 @@ export function initScene(container, callbacks = {}) {
       pan.z += (-Math.sin(yaw) * inputX - Math.cos(yaw) * inputY) * scale
       move(delta, 0, 0)
     } else move(delta, inputX + handX, inputY + handY)
-    report(time)
+    report(time, Boolean(previousPose) !== Boolean(xrPose))
     showBuildings(delta)
     placeCamera(delta)
     if (!immersive()) {
@@ -981,7 +1041,8 @@ export function initScene(container, callbacks = {}) {
     }
     environment.update(delta, focus)
     camera.updateMatrixWorld(true)
-    const view = immersive() ? camera.getWorldPosition(point) : camera.position
+    const view = xrPose ? point.set(xrPose.head[0], xrPose.head[1], xrPose.head[2]).add(here)
+      : immersive() ? camera.getWorldPosition(point) : camera.position
     avatars.update(delta, elapsed, { position: view })
     for (const entry of entries.values()) {
       const label = entry.label
@@ -1017,6 +1078,7 @@ export function initScene(container, callbacks = {}) {
 
   return {
     update,
+    updatePresence,
     setCamera,
     setQuality,
     camera: () => mode,
@@ -1029,7 +1091,7 @@ export function initScene(container, callbacks = {}) {
       stick.y = y
     },
     // Where the player stands: town tiles, metres above the street, and the building and storey.
-    position: () => ({ x: local.x, z: local.z, y: here.y, place: home?.id ?? null, level: local.level }),
+    position: () => ({ x: local.x, z: local.z, y: here.y, warp: local.warp, pose: xrPose, place: home?.id ?? null, level: local.level }),
     teleport(x, z) {
       if (state.town) arriveAt((x - local.ox) * TILE, (z - local.oz) * TILE)
     },
@@ -1062,7 +1124,7 @@ export function initScene(container, callbacks = {}) {
       supported: async () => Boolean(await navigator.xr?.isSessionSupported?.('immersive-vr').catch(() => false)),
       active: immersive,
       async enter() {
-        const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor', 'bounded-floor'] })
+        const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'] })
         renderer.xr.setReferenceSpaceType('local-floor')
         await renderer.xr.setSession(session)
       },

@@ -1,4 +1,5 @@
 import { initScene } from "./scene.js";
+import { connectPresence } from "./presence.js";
 import { createVoice } from "./voice.js";
 import { ROOM_COLORS, ROOM_LABELS, STYLE_FLOORS, STYLE_LABELS } from "./world/design.js";
 
@@ -41,8 +42,11 @@ let pendingTownEdit = null;
 let toastTimeout = 0;
 // Where this resident stands right now, as the 3D view last reported it.
 let position = null;
-let sendingMove = false;
-let pendingPosition = null;
+let presence = null;
+let motionFrame = null;
+let stateRequest = null;
+let refreshTimer;
+let voiceTimer;
 let sessionGeneration = 0;
 let lastSignal = 0;
 let joining = false;
@@ -87,7 +91,7 @@ function notify(message) {
 
 const apiBase = new URL(document.querySelector('meta[name="machi-api-origin"]')?.content || './', location.href);
 
-async function request(path, { body, method, session = token, after } = {}) {
+async function request(path, { body, method, session = token, after, signal } = {}) {
   const url = new URL(path, apiBase);
   if (after !== undefined) {
     url.searchParams.set("after", after);
@@ -103,7 +107,7 @@ async function request(path, { body, method, session = token, after } = {}) {
     headers["Content-Type"] = "application/json";
     payload = JSON.stringify(body);
   }
-  const response = await fetch(url, { method: method ?? (payload ? "POST" : "GET"), headers, body: payload });
+  const response = await fetch(url, { method: method ?? (payload ? "POST" : "GET"), headers, body: payload, signal });
   let data;
   try {
     data = await response.json();
@@ -123,6 +127,70 @@ const voice = createVoice({
   notify,
 });
 
+function withPresence(snapshot, frame) {
+  const moves = new Map(frame.players.map((player) => [player.id, player]));
+  const players = snapshot.players.map((player) => {
+    const move = moves.get(player.id);
+    return move && (player.warp ?? 0) === move.warp ? { ...player, ...move } : player;
+  });
+  return { ...snapshot, motion: frame.motion, players };
+}
+
+function acceptPresence(frame) {
+  if (!state || !Array.isArray(frame?.players) || !Number.isSafeInteger(frame.motion)) return;
+  if (frame.refresh && (frame.version === undefined || frame.version > state.version)) queueRefresh();
+  if (motionFrame && motionFrame.epoch === frame.epoch && motionFrame.motion >= frame.motion) {
+    return;
+  }
+  motionFrame = frame;
+  if (state.layout !== frame.layout || state.epoch !== frame.epoch) {
+    queueRefresh();
+    return;
+  }
+  const active = new Set(state.players.filter((player) => player.online).map((player) => player.id));
+  if (frame.players.some((player) => !active.has(player.id))) queueRefresh();
+  if (frame.motion <= (state.motion ?? 0)) return;
+  state = withPresence(state, frame);
+  scene?.updatePresence?.(state.players.filter((player) => player.id !== current().id && player.online));
+  if (!voiceTimer) voiceTimer = setTimeout(() => {
+    voiceTimer = null;
+    if (state) voice.sync({ ...current(), ...(position ?? {}) }, state.players);
+  }, 150);
+}
+
+function queueRefresh() {
+  if (refreshTimer || !token) return;
+  refreshTimer = setTimeout(async () => {
+    const generation = sessionGeneration;
+    if (stateRequest?.generation === generation) await stateRequest.promise.catch(() => {});
+    refreshTimer = null;
+    if (generation !== sessionGeneration || !token) return;
+    await refresh().catch((error) => sessionError(error, generation));
+  }, 50);
+}
+
+function startPresence() {
+  presence?.close();
+  clearTimeout(voiceTimer);
+  voiceTimer = null;
+  motionFrame = null;
+  const generation = sessionGeneration;
+  const session = token;
+  presence = connectPresence({
+    url: new URL("./api/presence", apiBase),
+    token: session,
+    read: (after, signal) => request(after === undefined ? "./api/presence" : `./api/presence?after=${after}`, { session, signal }),
+    write: (body, signal) => request("./api/presence", { body, session, signal }),
+    legacyWrite: async (move, signal) => {
+      const result = await request("./api/action", { body: { type: "move", ...move }, session, after: lastSignal, signal });
+      accept(result.state, generation);
+    },
+    onFrame: (frame) => { if (generation === sessionGeneration) acceptPresence(frame); },
+    onUnauthorized: () => { if (generation === sessionGeneration) queueRefresh(); },
+  });
+  if (position) reportMove(position);
+}
+
 function accept(snapshot, generation = sessionGeneration) {
   if (!snapshot || generation !== sessionGeneration) return;
   if (state && snapshot.version < state.version) return;
@@ -138,6 +206,8 @@ function accept(snapshot, generation = sessionGeneration) {
       houses: snapshot.houses.map((house) => (house.kept ? { ...house, design: before.get(house.id)?.design } : house)),
     };
   }
+  if (motionFrame && motionFrame.epoch === snapshot.epoch && motionFrame.layout === snapshot.layout
+    && motionFrame.motion > (snapshot.motion ?? 0)) snapshot = withPresence(snapshot, motionFrame);
   state = snapshot;
   update();
   voice.sync({ ...current(), ...(position ?? {}) }, snapshot.players);
@@ -183,11 +253,12 @@ async function join(name, code) {
     state = null;
     lastSignal = 0;
     selectedHouse = null;
-    position = pendingPosition = selection = building = preview = place = null;
+    position = selection = building = preview = place = null;
     token = result.token;
     localStorage.setItem(sessionKey, token);
     localStorage.setItem(`${sessionKey}:${result.state.code}`, token);
     accept(result.state);
+    startPresence();
     setTab("guide");
     const url = new URL(location.href);
     url.searchParams.delete("join");
@@ -202,17 +273,22 @@ async function tick() {
   if (token && !joining) {
     const generation = sessionGeneration;
     try {
-      const result = await request("./api/state", { after: lastSignal });
-      accept(result.state, generation);
+      await refresh();
     } catch (error) {
-      if (generation === sessionGeneration && error.status === 401) {
-        token = "";
-        localStorage.removeItem(sessionKey);
-        notify("セッションが切れました。「招待」から街に入り直してください。");
-      }
+      sessionError(error, generation);
     }
   }
-  setTimeout(tick, 950);
+  setTimeout(tick, state?.epoch ? 1800 : 950);
+}
+
+function sessionError(error, generation) {
+  if (!token || generation !== sessionGeneration || error.status !== 401) return;
+  sessionGeneration++;
+  token = "";
+  presence?.close();
+  presence = motionFrame = null;
+  localStorage.removeItem(sessionKey);
+  notify("セッションが切れました。「招待」から街に入り直してください。");
 }
 
 // What the animator of my own avatar has come to; the town passes it on to the other residents.
@@ -758,27 +834,10 @@ function walkTo(point) {
 
 // The 3D view reports where the resident has walked; the newest position is what gets sent.
 function reportMove(next) {
+  const moved = !position || position.x !== next.x || position.y !== next.y || position.z !== next.z;
   position = next;
-  pendingPosition = next;
-  drawMap();
-  if (!sendingMove) flushMoves();
-}
-
-async function flushMoves() {
-  sendingMove = true;
-  const generation = sessionGeneration;
-  try {
-    while (pendingPosition && token && generation === sessionGeneration) {
-      const next = pendingPosition;
-      pendingPosition = null;
-      await action("move", next);
-    }
-  } catch {
-    // A step that arrives just after walking through a door is simply out of date.
-    pendingPosition = null;
-  } finally {
-    sendingMove = false;
-  }
+  if (moved) drawMap();
+  if (state) presence?.push({ ...next, warp: next.warp ?? current().warp ?? 0, layout: state.layout });
 }
 
 async function run(task) {
@@ -987,10 +1046,17 @@ async function importAvatar(files) {
   }
 }
 
-async function refresh() {
+function refresh() {
   const generation = sessionGeneration;
-  const result = await request("./api/state", { after: lastSignal });
-  accept(result.state, generation);
+  if (stateRequest?.generation === generation) return stateRequest.promise;
+  const signal = AbortSignal.timeout(7500);
+  const promise = request("./api/state", { after: lastSignal, signal }).then((result) => {
+    accept(result.state, generation);
+  }).finally(() => {
+    if (stateRequest?.promise === promise) stateRequest = null;
+  });
+  stateRequest = { generation, promise };
+  return promise;
 }
 
 const handlers = {
@@ -1309,6 +1375,7 @@ async function boot() {
     if (token) {
       try {
         await refresh();
+        startPresence();
         if (!current().muted) await action("mic", { muted: true });
       } catch (error) {
         if (error.status !== 401) throw error;

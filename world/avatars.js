@@ -4,7 +4,9 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm'
 import { controlStates, createAnimator, createControlInput, validProgram } from './animator.js'
+import { downloadAvatar } from './avatar-download.js'
 import { textTexture } from './kit.js'
+import { createTrackedRig, followTracking } from './tracking.js'
 
 const AVATAR_HEIGHT = 1.6
 const VRM_EMOTIONS = ['happy', 'angry', 'sad', 'relaxed', 'surprised']
@@ -59,7 +61,10 @@ function standardAvatar(parent, color) {
   const skin = '#eabe9f'
   const hair = '#5e4d49'
   const trousers = '#6f8492'
-  const face = group(node, 0, 1.08, 0)
+  const hips = group(node, 0, 0.44, 0)
+  const torso = group(hips)
+  const face = group(torso, 0, 0.64, 0)
+  const bones = { hips, spine: torso, head: face }
   oval(face, skin, 0, 0, 0, 0.306, 0.325, 0.274)
   oval(face, hair, 0, 0.151, -0.077, 0.314, 0.256, 0.249)
   oval(face, hair, -0.152, 0.139, 0.107, 0.151, 0.117, 0.158)
@@ -67,21 +72,35 @@ function standardAvatar(parent, color) {
   for (const x of [-0.105, 0.105]) oval(face, '#493a3c', x, -0.036, 0.248, 0.029, 0.041, 0.022)
   for (const x of [-0.189, 0.189]) oval(face, '#dc9c8d', x, -0.10, 0.214, 0.046, 0.027, 0.029)
   const mouth = oval(face, '#a85f5a', 0, -0.135, 0.252, 0.04, 0.012, 0.02)
-  const shirt = oval(node, color, 0, 0.62, 0, 0.238, 0.28, 0.167)
+  const shirt = oval(torso, color, 0, 0.18, 0, 0.238, 0.28, 0.167)
   const arms = []
+  const shoulders = []
   const legs = []
-  for (const x of [-0.247, 0.247]) {
-    const arm = group(node, x, 0.78, 0)
-    arms.push(oval(arm, color, 0, -0.105, 0, 0.091, 0.16, 0.087))
-    oval(arm, skin, 0, -0.225, 0, 0.068, 0.081, 0.067)
-  }
-  for (const x of [-0.119, 0.119]) {
-    const leg = group(node, x, 0.44, 0)
-    oval(leg, trousers, 0, -0.145, 0, 0.105, 0.207, 0.098)
-    oval(leg, '#f2ede4', 0, -0.339, 0.064, 0.116, 0.08, 0.149)
+  for (const [side, sign] of [['right', -1], ['left', 1]]) {
+    const arm = group(torso, sign * 0.247, 0.34, 0)
+    const elbow = group(arm, 0, -0.126, 0)
+    const hand = group(elbow, 0, -0.099, 0)
+    arms.push(oval(arm, color, 0, -0.063, 0, 0.091, 0.113, 0.087))
+    arms.push(oval(elbow, color, 0, -0.045, 0, 0.079, 0.086, 0.076))
+    oval(hand, skin, 0, 0, 0, 0.068, 0.081, 0.067)
+    shoulders.push(arm)
+    bones[`${side}UpperArm`] = arm
+    bones[`${side}LowerArm`] = elbow
+    bones[`${side}Hand`] = hand
+
+    const leg = group(hips, sign * 0.119, 0, 0)
+    const knee = group(leg, 0, -0.163, 0)
+    const foot = group(knee, 0, -0.176, 0.064)
+    oval(leg, trousers, 0, -0.072, 0, 0.105, 0.133, 0.098)
+    oval(knee, trousers, 0, -0.082, 0, 0.096, 0.118, 0.092)
+    oval(foot, '#f2ede4', 0, 0, 0, 0.116, 0.08, 0.149)
     legs.push(leg)
+    bones[`${side}UpperLeg`] = leg
+    bones[`${side}LowerLeg`] = knee
+    bones[`${side}Foot`] = foot
   }
-  node.userData = { shirt, arms, legs, mouth, accessory: group(node), currentOutfit: '' }
+  node.userData = { shirt, arms, shoulders, legs, mouth, accessory: group(face, 0, -1.08, 0),
+    tracking: createTrackedRig(node, (name) => bones[name]), currentOutfit: '' }
   return node
 }
 
@@ -144,12 +163,19 @@ function modelRig(scene) {
   })
   const find = (...names) => names.map((name) => bones.get(name)).find(Boolean)
   const motions = []
+  const humanoid = { head: find('head'), hips: find('hips', 'pelvis', 'hip'), spine: find('chest', 'spine2', 'spine1', 'spine') }
 
   for (const [short, side, sign] of [['l', 'left', -1], ['r', 'right', 1]]) {
     const findSide = (...parts) => find(...parts.flatMap((part) => [`${side}${part}`, `${short}${part}`, `${part}${short}`]))
     const leg = findSide('upperleg', 'upleg', 'thigh')
     const arm = findSide('upperarm', 'arm')
     const elbow = findSide('lowerarm', 'forearm')
+    humanoid[`${side}UpperArm`] = arm
+    humanoid[`${side}LowerArm`] = elbow
+    humanoid[`${side}Hand`] = findSide('hand', 'wrist')
+    humanoid[`${side}UpperLeg`] = leg
+    humanoid[`${side}LowerLeg`] = findSide('lowerleg', 'leg', 'calf', 'shin', 'knee')
+    humanoid[`${side}Foot`] = findSide('foot', 'ankle')
 
     for (const [bone, swing, child] of [[leg, sign * 0.82], [arm, -sign * 0.55, elbow]]) {
       if (!bone) continue
@@ -172,7 +198,7 @@ function modelRig(scene) {
 
   const rotation = new THREE.Quaternion()
   return {
-    head: find('head'),
+    humanoid,
     walk(stride) {
       for (const { bone, axis, rest, swing } of motions) {
         bone.quaternion.copy(rest).premultiply(rotation.setFromAxisAngle(axis, stride * swing))
@@ -624,12 +650,16 @@ function visibleModelBounds(scene) {
 const seedOf = (text = '') => [...String(text)].reduce((hash, letter) => (Math.imul(hash, 31) + letter.codePointAt(0)) >>> 0, 7)
 
 // `local` is true for the model of the person at this screen.
-async function importAvatar(url, allowModel, { local = false, seed = 1 } = {}) {
+async function importAvatar(url, allowModel, { local = false, seed = 1, signal } = {}) {
   const loader = new GLTFLoader()
   loader.register((parser) => new VRMLoaderPlugin(parser))
   let gltf
   try {
-    gltf = await loader.loadAsync(url)
+    if (signal) {
+      const bytes = await downloadAvatar(url, signal)
+      signal.throwIfAborted()
+      gltf = await loader.parseAsync(bytes, new URL('.', new URL(url, document.baseURI)).href)
+    } else gltf = await loader.loadAsync(url)
   } catch (error) {
     throw new Error('アバターの3Dモデルを読み込めませんでした。', { cause: error })
   }
@@ -670,14 +700,15 @@ async function importAvatar(url, allowModel, { local = false, seed = 1 } = {}) {
     }
   })
   const rig = vrm?.humanoid ? null : modelRig(scene)
-  const head = rig ? rig.head : vrm.humanoid.getNormalizedBoneNode('head')
+  const bone = (name) => rig ? rig.humanoid[name] : vrm.humanoid.getNormalizedBoneNode(name)
+  const head = bone('head')
   const headPosition = head?.getWorldPosition(new THREE.Vector3())
   const headHeight = headPosition?.y ?? AVATAR_HEIGHT * 0.84
   const crown = size.y * scale - headHeight
   const headWidth = THREE.MathUtils.clamp(crown * 0.88, 0.10, 0.26)
   const springs = vrm?.humanoid ? [] : createSprings(scene)
   return {
-    scene, vrm, rig, head, gimmick, animated, springs, eyeHeight: headHeight + crown * 0.25,
+    scene, vrm, rig, head, gimmick, animated, springs, tracking: createTrackedRig(scene, bone), eyeHeight: headHeight + crown * 0.25,
     sizing: { width: headWidth, height: crown + 0.04 },
   }
 }
@@ -746,7 +777,8 @@ export function createAvatars(world, { onAvatarState } = {}) {
   function syncModel(actor, url) {
     if (actor.requestURL === url) return
     actor.requestURL = url
-    actor.requestVersion++
+    actor.modelRequest?.abort()
+    actor.modelRequest = null
     if (url === actor.activeURL) return
     removeModel(actor)
     actor.activeURL = null
@@ -756,16 +788,19 @@ export function createAvatars(world, { onAvatarState } = {}) {
       localVRM.record = null
       return
     }
-    const version = actor.requestVersion
-    importAvatar(url, true, { local: actor.self, seed: seedOf(actor.id) }).then((record) => {
-      if (actor.requestVersion !== version) {
+    const request = new AbortController()
+    actor.modelRequest = request
+    importAvatar(url, true, { local: actor.self, seed: seedOf(actor.id), signal: request.signal }).then((record) => {
+      if (request.signal.aborted) {
         VRMUtils.deepDispose(record.scene)
         return
       }
       attachModel(actor, record, url)
       applyOutfit(actor, actor.outfit, actor.color)
     }).catch(() => {
-      // The standard avatar remains visible while a remote model is unavailable.
+      // The standard avatar remains visible when a model cannot be used.
+    }).finally(() => {
+      if (actor.modelRequest === request) actor.modelRequest = null
     })
   }
 
@@ -780,6 +815,23 @@ export function createAvatars(world, { onAvatarState } = {}) {
     characters.add(actor.label)
   }
 
+  function updatePresence(item, spot) {
+    const actor = actors.get(item.id)
+    if (!actor || actor.self) return
+    actor.target.set(spot.x, spot.y ?? 0, spot.z)
+    actor.trackingTarget = item.pose ?? null
+    const warp = item.warp ?? 0
+    // A server-authorized move or a different scene is a jump, not a walk.
+    if (actor.place !== spot.place || actor.warp !== warp) {
+      actor.place = spot.place
+      actor.warp = warp
+      actor.node.position.copy(actor.target)
+      actor.position.copy(actor.target)
+      actor.height = actor.target.y
+      actor.tracked = null
+    }
+  }
+
   // `self` and `others` carry a `world` position in metres and the usual player fields.
   function sync(self, others) {
     lastSelf = self
@@ -788,7 +840,7 @@ export function createAvatars(world, { onAvatarState } = {}) {
     if (self) people.set(self.id, self)
     for (const [id, actor] of actors) {
       if (people.has(id)) continue
-      actor.requestVersion++
+      actor.modelRequest?.abort()
       removeModel(actor)
       clearLayer(actor.standard.userData.accessory)
       characters.remove(actor.label)
@@ -804,7 +856,8 @@ export function createAvatars(world, { onAvatarState } = {}) {
         const node = group(characters, item.world.x, item.world.y ?? 0, item.world.z)
         actors.set(id, {
           id, node, self: isSelf, standard: standardAvatar(node, color), modelAccessory: group(node),
-          target: new THREE.Vector3(item.world.x, item.world.y ?? 0, item.world.z), place: null, requestVersion: 0, stride: 0, speed: 0,
+          target: new THREE.Vector3(item.world.x, item.world.y ?? 0, item.world.z), place: null, stride: 0, speed: 0,
+          position: node.position.clone(),
           height: item.world.y ?? 0,
           blink: 2 + Math.random() * 3, mouth: 0,
         })
@@ -818,13 +871,7 @@ export function createAvatars(world, { onAvatarState } = {}) {
       actor.serverURL = item.vrmUrl || null
       const name = item.name || (isSelf ? 'あなた' : '住人')
       setLabel(actor, actor.afk ? `${name}（離席中）` : name)
-      actor.target.set(item.world.x, item.world.y ?? 0, item.world.z)
-      // Moving to another place (a house, a floor) is a jump, not a walk.
-      if (actor.place !== item.world.place) {
-        actor.place = item.world.place
-        actor.node.position.copy(actor.target)
-        actor.height = actor.target.y
-      }
+      updatePresence(item, item.world)
       if (isSelf && localVRM && item.vrmUrl && item.vrmUrl !== localVRM.previousServerURL
         && actor.activeURL === localVRM.url && actor.model) {
         actor.activeURL = item.vrmUrl
@@ -898,30 +945,37 @@ export function createAvatars(world, { onAvatarState } = {}) {
     for (const actor of actors.values()) {
       const node = actor.node
       if (!actor.self) {
+        actor.tracked = followTracking(actor.tracked, actor.trackingTarget, delta)
         // Other residents glide towards where the server last saw them.
-        const dx = actor.target.x - node.position.x
-        const dz = actor.target.z - node.position.z
+        const dx = actor.target.x - actor.position.x
+        const dz = actor.target.z - actor.position.z
         const distance = Math.hypot(dx, dz)
-        if (distance > 0.02) {
-          const move = Math.min(distance, Math.max(distance * 4, 2.2) * delta)
-          node.position.x += dx / distance * move
-          node.position.z += dz / distance * move
-          const goal = Math.atan2(dx, dz)
-          const turn = Math.atan2(Math.sin(goal - node.rotation.y), Math.cos(goal - node.rotation.y))
-          node.rotation.y += turn * (1 - Math.exp(-12 * delta))
-          actor.speed = move / delta
-        } else actor.speed = 0
+        const blend = distance > 0.005 ? 1 - Math.exp(-28 * delta) : 1
+        actor.position.x += dx * blend
+        actor.position.z += dz * blend
+        actor.speed += (Math.min(6, distance * blend / delta) - actor.speed) * (1 - Math.exp(-18 * delta))
+        const tracked = actor.tracked
+        node.position.x = actor.position.x + (tracked?.head.position.x ?? 0)
+        node.position.z = actor.position.z + (tracked?.head.position.z ?? 0)
+        if (tracked) node.rotation.y = tracked.yaw
+        else if (distance > 0.005) {
+          const turn = Math.atan2(dx, dz) - node.rotation.y
+          node.rotation.y += Math.atan2(Math.sin(turn), Math.cos(turn)) * (1 - Math.exp(-18 * delta))
+        }
       }
       const walking = actor.speed > 0.25
       actor.stride += delta * (walking ? 5 + Math.min(actor.speed, 6) * 1.5 : 0)
       const stride = walking ? Math.sin(actor.stride) * 0.55 : 0
       // Other residents climb to the storey they were last seen on; this screen's own is placed by the scene.
-      if (!actor.self) actor.height += (actor.target.y - actor.height) * (1 - Math.exp(-10 * delta))
-      node.position.y = actor.height + (walking ? Math.abs(Math.sin(actor.stride)) * 0.05 : 0)
-      for (const [index, leg] of actor.standard.userData.legs.entries()) {
+      if (!actor.self) actor.height += (actor.target.y - actor.height) * (1 - Math.exp(-24 * delta))
+      node.position.y = actor.height + (walking && !actor.tracked ? Math.abs(Math.sin(actor.stride)) * 0.05 : 0)
+      const standard = actor.standard.userData
+      standard.tracking.reset()
+      for (const [index, leg] of standard.legs.entries()) {
         leg.rotation.x = index ? stride : -stride
-        actor.standard.userData.arms[index].parent.rotation.x = index ? -stride * 0.75 : stride * 0.75
+        standard.shoulders[index].rotation.x = index ? -stride * 0.75 : stride * 0.75
       }
+      if (!actor.model) standard.tracking.apply(actor.tracked, 1.45)
 
       // Lip sync follows how loudly this resident is speaking.
       const loud = levels.get(actor.id) ?? 0
@@ -934,7 +988,8 @@ export function createAvatars(world, { onAvatarState } = {}) {
       const closed = actor.blink < 0 ? 1 - Math.abs(actor.blink + 0.07) / 0.07 : 0
 
       if (actor.model) {
-        const { vrm, rig, head, gimmick, springs } = actor.model
+        const { vrm, rig, head, gimmick, springs, tracking, eyeHeight } = actor.model
+        tracking?.reset()
         if (rig) rig.walk(stride)
         else {
           vrmWalk(vrm, stride)
@@ -944,7 +999,7 @@ export function createAvatars(world, { onAvatarState } = {}) {
             manager.setValue('oh', round)
             manager.setValue('blink', closed)
           }
-          vrm.update(delta)
+          if (!actor.tracked) vrm.update(delta)
         }
         if (actor.model.animated) {
           try {
@@ -965,11 +1020,15 @@ export function createAvatars(world, { onAvatarState } = {}) {
           const weight = !speaking ? 0 : sound === 'aa' ? wide : sound === 'oh' || sound === 'ou' ? round : 0
           for (const slot of slots) slot.influences[slot.index] = Math.max(holding(slot) ?? 0, weight)
         }
+        if (actor.tracked) {
+          tracking?.apply(actor.tracked, eyeHeight)
+          vrm?.update(delta)
+        }
         if (springs.length) updateSprings(springs, delta)
         if (head && actor.modelAccessory.children.length) {
           head.getWorldPosition(headPoint)
           actor.modelAccessory.position.copy(node.worldToLocal(headPoint))
-          if (!rig) {
+          if (!rig || actor.tracked) {
             head.getWorldQuaternion(headRotation)
             node.getWorldQuaternion(actorRotation)
             actor.modelAccessory.quaternion.copy(actorRotation.invert().multiply(headRotation))
@@ -995,6 +1054,11 @@ export function createAvatars(world, { onAvatarState } = {}) {
 
   return {
     sync, update,
+    updatePresence(item, spot) {
+      const resident = lastOthers.find((other) => other.id === item.id)
+      if (resident) Object.assign(resident, item, { world: spot })
+      updatePresence(item, spot)
+    },
     actor: (id) => actors.get(id),
     setVoiceLevels(next) {
       levels.clear()
@@ -1041,7 +1105,7 @@ export function createAvatars(world, { onAvatarState } = {}) {
     },
     dispose() {
       for (const actor of actors.values()) {
-        actor.requestVersion++
+        actor.modelRequest?.abort()
         removeModel(actor)
       }
       if (localVRM?.record) VRMUtils.deepDispose(localVRM.record.scene)
