@@ -3,9 +3,9 @@
 // to get there. Short trips are walked or cycled; the rest go by road and are loaded onto the
 // road network, which gives each road its demand. The metropolis beyond the east edge draws
 // the commuters it employs.
-import { Heap } from './heap.js?v=online-1794946480502'
-import { ROAD } from './develop.js?v=online-1794946480502'
-import { PURPOSE_RATES, aggregate } from './population.js?v=online-1794946480502'
+import { Heap } from './heap.js?v=online-1794980046418'
+import { ROAD } from './develop.js?v=online-1794980046418'
+import { PURPOSE_RATES, aggregate } from './population.js?v=online-1794980046418'
 
 export const ZONE = 1000 // side of a traffic zone in metres
 export const ROAD_SPEED = { [ROAD.COLLECTOR]: 17, [ROAD.ARTERIAL]: 23, [ROAD.TRUNK]: 25 } // km/h with congestion

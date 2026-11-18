@@ -142,6 +142,34 @@ h1 { font-size: 19px; line-height: 1.3; letter-spacing: 0.02em; }
 .station-table tr:hover td { background: #f3f6f2; }
 .buttons { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 6px; }
 
+/* Making a town of the game from a district (game-link.js). */
+.game-link { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.game-link h3 { margin: 0 0 6px; font-size: 14px; }
+.game-link .note { margin: 0 0 8px; }
+.game-town { margin-bottom: 10px; padding: 10px 12px; border-radius: var(--radius-s); background: var(--accent-soft); color: var(--accent-ink); font-size: 13px; }
+.game-town p { margin: 0; }
+.game-town b { letter-spacing: 0.06em; }
+.game-link .field { display: grid; gap: 4px; color: var(--ink-2); font-size: 13px; }
+.game-link .field input { height: 36px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--radius-s); background: #fff; font: inherit; color: var(--ink); }
+.game-link .choice { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 10px 0 0; padding: 0; border: 0; }
+.game-link .choice legend { margin-bottom: 4px; padding: 0; color: var(--ink-2); font-size: 13px; }
+.game-link .choice label { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: var(--radius-s); background: #fff; cursor: pointer; font-weight: 600; }
+.game-link .choice label:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.game-link .choice input { margin: 3px 0 0; accent-color: var(--accent); }
+.game-link .choice small { display: block; color: var(--ink-3); font-weight: 500; font-size: 12px; }
+.buttons button.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
+.buttons button:disabled { opacity: 0.55; cursor: progress; }
+.game-status { margin: 4px 0 0; color: var(--ink-2); font-size: 13px; white-space: pre-line; }
+.game-status.failed { color: var(--danger); }
+.game-status.warning { color: #8f5f00; }
+/* Who manages the district in the town this browser made, or the offer to make it one's own. */
+.game-claim { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(20, 89, 77, 0.16); }
+.game-claim p + p { margin-top: 4px; }
+.game-claim .game-manager { font-weight: 700; }
+.game-claim .note { margin: 4px 0 0; }
+.game-claim .buttons { margin: 8px 0 0; }
+.game-claim .buttons button { border-color: var(--accent); color: var(--accent-ink); }
+
 @media (max-width: 760px) {
   .region { display: block; }
   .map { position: fixed; inset: 0; }

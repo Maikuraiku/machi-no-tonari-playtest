@@ -3,9 +3,9 @@
 // level ground, along the contours on a hillside), irregular in old villages and regular in
 // planned estates. Streets and buildings are generated only for the part of the map being
 // looked at, and always come out the same for the same place.
-import { BUILT_USES, ROAD, ROAD_WIDTH, USE } from './develop.js?v=online-1794946480502'
-import { crossing } from './geometry.js?v=online-1794946480502'
-import { fbm, hash3 } from './noise.js?v=online-1794946480502'
+import { BUILT_USES, ROAD, ROAD_WIDTH, USE } from './develop.js?v=online-1794980046418'
+import { crossing } from './geometry.js?v=online-1794980046418'
+import { fbm, hash3 } from './noise.js?v=online-1794980046418'
 
 // Block shapes by the use that dominates a superblock: lattice spacing across (a) and along (b)
 // in metres, how irregular the lattice is, the share of lattice streets left out, street width.

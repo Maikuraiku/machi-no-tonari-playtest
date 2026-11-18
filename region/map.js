@@ -1,10 +1,11 @@
 // The region map page. A worker generates the region and draws the ground as tiles; this page
 // lays the tiles out, draws roads, streams and railways over them, and shows the numbers, the
 // railway lines and each line's vertical profile.
-import { ROAD, ROAD_WIDTH } from './develop.js?v=online-1794946480502'
-import { STRUCTURE, STRUCTURE_NAMES } from './rail.js?v=online-1794946480502'
-import { regionSeed } from './region.js?v=online-1794946480502'
-import { COST_STOPS, ERA_COLORS, ERA_LABELS, HEIGHT_STOPS, LAYERS, LEVELS, PEOPLE_STOPS, TILE, USE_STYLE, metresPerPixel } from './render.js?v=online-1794946480502'
+import { ROAD, ROAD_WIDTH } from './develop.js?v=online-1794980046418'
+import { STRUCTURE, STRUCTURE_NAMES } from './rail.js?v=online-1794980046418'
+import { regionSeed } from './region.js?v=online-1794980046418'
+import { createGameLink } from './game-link.js?v=online-1794980046418'
+import { COST_STOPS, ERA_COLORS, ERA_LABELS, HEIGHT_STOPS, LAYERS, LEVELS, PEOPLE_STOPS, TILE, USE_STYLE, metresPerPixel } from './render.js?v=online-1794980046418'
 
 const $ = (selector, root = document) => root.querySelector(selector)
 const FONT = '"Yu Gothic UI", "Hiragino Sans", "Noto Sans JP", Meiryo, system-ui, sans-serif'
@@ -23,6 +24,8 @@ const state = {
   ready: false,
   summary: null,
   overlay: null,
+  // The region's fingerprints ({ division, lines }) from the worker, for game-link.js.
+  fingerprint: null,
   layer: 'relief',
   show: { roads: true, traffic: false, streams: true, rail: true, labels: true, desire: false, districts: true },
   district: -1,
@@ -66,7 +69,7 @@ function startWorker() {
   tileRequests.clear()
   inflight = 0
   queue = []
-  worker = new Worker(new URL('./worker.js?v=online-1794946480502', import.meta.url), { type: 'module' })
+  worker = new Worker(new URL('./worker.js?v=online-1794980046418', import.meta.url), { type: 'module' })
   worker.onmessage = (event) => onMessage(event.data)
   worker.onerror = (event) => {
     event.preventDefault?.()
@@ -105,6 +108,7 @@ function generate(text, attempt = 0) {
   state.heard = false
   state.summary = null
   state.overlay = null
+  state.fingerprint = null
   state.selected = -1
   state.district = -1
   state.marker = null
@@ -129,6 +133,7 @@ function onReady(message) {
   state.ready = true
   state.summary = message.summary
   state.overlay = prepareOverlay(message.overlay)
+  state.fingerprint = message.fingerprint ?? null
   $('#progress').hidden = true
   showStatus(null)
   if (!state.fitted) fitView()
@@ -1029,13 +1034,14 @@ function renderDistrict() {
       ${stat('駅', district.stations.length ? district.stations.map(escape).join('・') : 'なし', `隣の丁目 ${district.neighbours.length}`)}
     </dl>
     <p class="note" style="margin-top:8px">${escape(town.name)}は${town.districts.length}丁目まで（${(town.area / 1e6).toFixed(2)}km²・人口 ${persons(town.residents)}人）。町の境は幹線道路・地上の線路・川・崖、丁目の境は補助的な道路を目安に引いています。</p>
-    <div class="buttons" id="district-actions"></div>`
+    <div id="district-actions"></div>`
   $('#district-close', box).addEventListener('click', () => selectDistrict(state.district))
-  renderDistrictActions?.(district)
+  renderDistrictActions(district)
 }
 
-// Filled in when the game can open a district (set by the game-link code below).
-let renderDistrictActions = null
+// Making a town of the game from the district, or going to it (game-link.js).
+const gameLink = createGameLink({ worker: () => worker, seed: () => state.seed, fingerprint: () => state.fingerprint })
+const renderDistrictActions = (district) => gameLink.render(district, $('#district-actions'))
 
 function selectLine(id, centre = true) {
   if (state.selected === id) id = -1

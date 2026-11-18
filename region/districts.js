@@ -8,13 +8,13 @@
 // the old centres (road junctions, village cores), then an even lattice for the rest. Every cell
 // of the 40 m grid joins the seed it can reach most cheaply, where crossing a barrier costs
 // extra. Blocks are grown the same way inside each town.
-import { BUILT_USES, USE } from './develop.js?v=online-1794946480502'
-import { D8L, D8X, D8Z } from './grid.js?v=online-1794946480502'
-import { Heap } from './heap.js?v=online-1794946480502'
-import { placeName } from './names.js?v=online-1794946480502'
-import { unit } from './noise.js?v=online-1794946480502'
-import { STRUCTURE } from './rail.js?v=online-1794946480502'
-import { LAND } from './terrain.js?v=online-1794946480502'
+import { BUILT_USES, USE } from './develop.js?v=online-1794980046418'
+import { D8L, D8X, D8Z } from './grid.js?v=online-1794980046418'
+import { Heap } from './heap.js?v=online-1794980046418'
+import { placeName } from './names.js?v=online-1794980046418'
+import { unit } from './noise.js?v=online-1794980046418'
+import { STRUCTURE } from './rail.js?v=online-1794980046418'
+import { LAND } from './terrain.js?v=online-1794980046418'
 
 export const DISTRICT_CELL = 40 // metres: districts are made of cells of the 40 m planning grid
 export const TOWN_SPACING = 1100 // metres between town seeds

@@ -6,7 +6,7 @@
 // that forearm; the other hand points at it and presses with the trigger (or a pinch). A face
 // button instead floats it in front of the eyes until it is closed.
 import * as THREE from 'three'
-import { textTexture } from './kit.js?v=online-1794946480502'
+import { textTexture } from './kit.js?v=online-1794980046418'
 
 // The canvas; a menu uses as much of its height as it needs.
 const WIDTH = 1024

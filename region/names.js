@@ -1,7 +1,7 @@
 // Place names made from the land: a first part drawn from common Japanese place-name words and
 // an ending that says what kind of place it is (a plateau, a valley, the riverside, an old
 // highway town).
-import { hash3 } from './noise.js?v=online-1794946480502'
+import { hash3 } from './noise.js?v=online-1794980046418'
 
 const FIRST = [
   '桜', '松', '梅', '竹', '柳', '若', '上', '下', '北', '南', '東', '西', '中', '新', '大', '小', '高', '深',

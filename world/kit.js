@@ -3,7 +3,7 @@
 // set: colour, the relief of its surface (as a normal map, with the height kept for parallax),
 // and how rough and how shaded each spot is.
 import * as THREE from 'three'
-import { CELL, CELLS, FINISHES, FRAME_COLORS, TILE, hash } from './design.js?v=online-1794946480502'
+import { CELL, CELLS, FINISHES, FRAME_COLORS, TILE, hash } from './design.js?v=online-1794980046418'
 
 export { CELL, CELLS, TILE, hash }
 

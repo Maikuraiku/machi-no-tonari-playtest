@@ -9,7 +9,7 @@
   <meta name="theme-color" content="#f6f7f3">
   <meta name="description" content="服屋に寄って、家を壁一枚から設計して、友達と街を育てるブラウザゲーム。">
   <title>まちのとなり</title>
-  <link rel="stylesheet" href="./style.css?v=online-1794946480502">
+  <link rel="stylesheet" href="./style.css?v=online-1794980046418">
   <script type="importmap">
     {
       "imports": {
@@ -67,6 +67,7 @@
       <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/></symbol>
       <symbol id="i-shirt" viewBox="0 0 24 24"><path d="M9 4 4 6 2 11l4 2 2-3v10h8V10l2 3 4-2-2-5-5-2a3 3 0 0 1-6 0Z"/></symbol>
       <symbol id="i-hat" viewBox="0 0 24 24"><path d="M7 12V9a5 5 0 0 1 10 0v3m-10 0h10c2.5.5 4 1.4 4 2.4C21 16 17 17 12 17s-9-1-9-2.6c0-1 1.5-1.9 4-2.4Z"/></symbol>
+      <symbol id="i-district" viewBox="0 0 24 24"><path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"/></symbol>
     </defs>
   </svg>
 
@@ -79,6 +80,7 @@
       <button type="button" data-tab="shop" aria-pressed="false"><svg class="icon"><use href="#i-shop"/></svg><span>服屋</span></button>
       <button type="button" data-tab="home" aria-pressed="false"><svg class="icon"><use href="#i-home"/></svg><span>家づくり</span></button>
       <button type="button" data-tab="edit" aria-pressed="false"><svg class="icon"><use href="#i-edit"/></svg><span>街の編集</span></button>
+      <button type="button" data-tab="district" aria-pressed="false"><svg class="icon"><use href="#i-district"/></svg><span>地区</span></button>
       <button type="button" data-tab="avatar" aria-pressed="false"><svg class="icon"><use href="#i-avatar"/></svg><span>アバター</span></button>
       <button type="button" data-tab="settings" aria-pressed="false" class="dock-last"><svg class="icon"><use href="#i-settings"/></svg><span>設定</span></button>
     </nav>
@@ -129,6 +131,6 @@
   </dialog>
 
   <!-- If the 3D libraries cannot be fetched, say so instead of leaving an empty screen. -->
-  <script type="module" src="./app.js?v=online-1794946480502" onerror="const toast = document.getElementById('toast'); toast.hidden = false; toast.textContent = '3D表示の部品を読み込めませんでした。通信環境を確認して、ページを読み込み直してください。'"></script>
+  <script type="module" src="./app.js?v=online-1794980046418" onerror="const toast = document.getElementById('toast'); toast.hidden = false; toast.textContent = '3D表示の部品を読み込めませんでした。通信環境を確認して、ページを読み込み直してください。'"></script>
 </body>
 </html>

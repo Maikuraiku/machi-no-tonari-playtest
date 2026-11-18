@@ -13,8 +13,8 @@
 // the flat it belongs to; '0' is shared space.
 import {
   BODY, CELL, CELLS, FINISHES, FRAME_COLORS, ITEMS, OPENINGS, ROOFS, ROOM_LABELS, STYLES, colliders, frontDoors, hash, houseSeed,
-} from './design.js?v=online-1794946480502'
-import { equip, fenceYard } from './exterior.js?v=online-1794946480502'
+} from './design.js?v=online-1794980046418'
+import { equip, fenceYard } from './exterior.js?v=online-1794980046418'
 
 const SIDES = [
   { name: 's', dx: 0, dz: 1 }, { name: 'n', dx: 0, dz: -1 }, { name: 'e', dx: 1, dz: 0 }, { name: 'w', dx: -1, dz: 0 },

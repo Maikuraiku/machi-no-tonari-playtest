@@ -8,9 +8,9 @@
 // lift lead from the street to the concourse, and a second flight and a second lift from
 // inside the gates to the platform. The track runs through the station's own lot, along the
 // south side of the building, so the same drawing fits wherever a line is laid.
-import { ITEMS, floorHeight, storeyOf } from './design.js?v=online-1794946480502'
-import { CAR, doorOffsets, trainLength } from './monorail-line.js?v=online-1794946480502'
-import { compileDesign, lookOf } from './plans.js?v=online-1794946480502'
+import { ITEMS, floorHeight, storeyOf } from './design.js?v=online-1794980046418'
+import { CAR, doorOffsets, trainLength } from './monorail-line.js?v=online-1794980046418'
+import { compileDesign, lookOf } from './plans.js?v=online-1794980046418'
 
 const CELL = 0.91
 const round = (value) => Math.round(value * 1000) / 1000

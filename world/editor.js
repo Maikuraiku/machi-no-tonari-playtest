@@ -7,8 +7,8 @@
 // of the lot.
 import {
   CELL, FINISHES, ITEMS, OPENINGS, STAIR_LOOKS, STYLES, STYLE_FLOORS, WALL_DECOR, boxCorners, inRoom, pointIn, stairLayout, storeyShape,
-} from './design.js?v=online-1794946480502'
-import { designOf, porchesFor } from './plans.js?v=online-1794946480502'
+} from './design.js?v=online-1794980046418'
+import { designOf, porchesFor } from './plans.js?v=online-1794980046418'
 
 // What the town accepts of a drawing (see readDesign in world.mjs).
 export const LIMITS = { walls: 400, openings: 400, rooms: 120, items: 300, stairs: 12, lifts: 4, decor: 200, yard: 40, bytes: 220_000 }

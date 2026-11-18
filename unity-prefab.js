@@ -2,6 +2,7 @@ const headerPattern = /^---[ \t]+!u!(\d+)[ \t]+&(-?\d+)(?:[ \t]+stripped)?[ \t]*
 const rendererTypes = new Set(["23", "137"]);
 const transformTypes = new Set(["4", "224"]);
 const materialSlot = /^m_Materials\.Array\.data\[(\d+)\]$/;
+const weightSlot = /^m_BlendShapeWeights\.Array\.data\[(\d+)\]$/;
 const basename = (path) => path.split("/").at(-1);
 const dirname = (path) => path.slice(0, path.lastIndexOf("/"));
 const stem = (path) => basename(path).replace(/\.[^.]+$/, "").toLowerCase();
@@ -44,6 +45,11 @@ function arrayAfter(source, property) {
   return array;
 }
 
+// A Unity vector or quaternion, `{x: 0, y: 1.5, z: -0.2}`, as an array.
+function numbers(value, keys) {
+  return keys.map((key) => Number(value?.match(new RegExp(`\\b${key}:[ \\t]*(-?[\\d.]+(?:[eE][-+]?\\d+)?)`))?.[1]) || 0);
+}
+
 function modifications(source) {
   const entries = [...source.matchAll(/^([ \t]*)- target:[ \t]*(\{[^}]+\})[ \t]*\r?$/gm)];
   return entries.map((match, index) => {
@@ -70,6 +76,7 @@ function parsePrefab(source, path, guid) {
   const renderers = new Map();
   const instances = [];
   const springs = [];
+  const colliders = new Map();
   for (const [index, match] of headers.entries()) {
     const [, type, id] = match;
     const body = source.slice(match.index + match[0].length, headers[index + 1]?.index);
@@ -84,6 +91,8 @@ function parsePrefab(source, path, guid) {
         enabled: boolean(field(body, "m_Enabled")),
         materials: arrayAfter(body, "m_Materials").map((item) => ref(item).guid || null),
         mesh: ref(field(body, "m_Mesh")),
+        // What the prefab sets the mesh's blend shapes to, in percent.
+        weights: arrayAfter(body, "m_BlendShapeWeights").map(Number),
         corresponding,
       });
     } else if (type === "1001") {
@@ -96,10 +105,27 @@ function parsePrefab(source, path, guid) {
         objectId: ref(field(body, "m_GameObject")).id, rootId: ref(field(body, "rootTransform")).id,
         pull: amount("pull"), spring: amount("spring") || amount("momentum"), stiffness: amount("stiffness"),
         gravity: amount("gravity"), ignoreIds: arrayAfter(body, "ignoreTransforms").map((item) => ref(item).id),
+        // How thick the chain is, how far it may swing from where it rests, and the colliders it
+        // rests against (unless collisions are switched off for it).
+        radius: amount("radius"),
+        limit: Number(field(body, "limitType")) > 0
+          ? { type: Number(field(body, "limitType")), x: amount("maxAngleX"), z: amount("maxAngleZ") } : null,
+        colliderIds: boolean(field(body, "allowCollision")) === false ? []
+          : arrayAfter(body, "colliders").map((item) => ref(item).id).filter((id) => id !== "0"),
+      });
+    } else if (type === "114" && ["shapeType", "insideBounds", "radius"].every((name) =>
+      new RegExp(`^[ \\t]*${name}:`, "m").test(body)) && boolean(field(body, "m_Enabled")) !== false) {
+      // A VRChat PhysBone collider: a sphere, capsule or plane on a bone, in that bone's own space.
+      colliders.set(id, {
+        objectId: ref(field(body, "m_GameObject")).id, rootId: ref(field(body, "rootTransform")).id,
+        shape: Number(field(body, "shapeType")) || 0, inside: boolean(field(body, "insideBounds")) === true,
+        radius: Number(field(body, "radius")) || 0, height: Number(field(body, "height")) || 0,
+        position: numbers(field(body, "position"), ["x", "y", "z"]),
+        rotation: numbers(field(body, "rotation"), ["x", "y", "z", "w"]),
       });
     }
   }
-  return { source, path, guid, objects, transforms, renderers, instances, springs };
+  return { source, path, guid, objects, transforms, renderers, instances, springs, colliders };
 }
 
 function modelIdsFromMeta(source) {
@@ -159,12 +185,23 @@ function springRules(prefab, modelGuid, importedNames, byGuid, visited = new Set
   for (const spring of prefab.springs) {
     const path = spring.rootId !== "0" ? pathFor.transform(spring.rootId) : pathFor(spring.objectId);
     if (!path.length) continue;
+    const colliders = colliderRules(prefab, spring.colliderIds, pathFor);
     rules.push({
       path, pull: spring.pull, spring: spring.spring, stiffness: spring.stiffness, gravity: spring.gravity,
       ignore: spring.ignoreIds.map((id) => pathFor.transform(id)).filter((ignored) => ignored.length),
+      ...(spring.radius > 0 ? { radius: spring.radius } : {}),
+      ...(spring.limit ? { limit: spring.limit } : {}),
+      ...(colliders.length ? { colliders } : {}),
     });
   }
   return rules;
+}
+
+// The colliders a PhysBone lists, each with the path of the bone it sits on.
+function colliderRules(prefab, ids, pathFor) {
+  return ids.map((id) => prefab.colliders.get(id)).filter(Boolean).map(({ objectId, rootId, ...shape }) => ({
+    path: rootId !== "0" ? pathFor.transform(rootId) : pathFor(objectId), ...shape,
+  })).filter(({ path }) => path.length);
 }
 
 function materialOverrides(rule, index, guid) {
@@ -173,10 +210,12 @@ function materialOverrides(rule, index, guid) {
 }
 
 function prefabRules(prefab, modelGuid, importedNames, byGuid, visited = new Set()) {
-  if (visited.has(prefab)) return { visibility: [], materials: [], renames: [] };
+  if (visited.has(prefab)) return { visibility: [], materials: [], renames: [], weights: [] };
   visited.add(prefab);
   const visibility = [];
   const materials = [];
+  // Blend shape weights, in percent, by the mesh's path.
+  const weights = [];
   // Names the prefab gives to parts of the model. Animation clips address parts by these names.
   const renames = [];
   const pathFor = localPaths(prefab, importedNames);
@@ -189,6 +228,7 @@ function prefabRules(prefab, modelGuid, importedNames, byGuid, visited = new Set
     if (!path.length) continue;
     if (renderer.enabled !== undefined) visibility.push({ path, value: renderer.enabled, renderer: true });
     if (renderer.materials.length) materials.push({ path, materials: renderer.materials });
+    if (renderer.weights.some(Number.isFinite)) weights.push({ path, weights: renderer.weights });
   }
 
   for (const instance of prefab.instances) {
@@ -198,10 +238,12 @@ function prefabRules(prefab, modelGuid, importedNames, byGuid, visited = new Set
       visibility.unshift(...inherited.visibility);
       materials.unshift(...inherited.materials);
       renames.unshift(...inherited.renames);
+      weights.unshift(...inherited.weights);
     }
     if (instance.source.guid !== modelGuid && !source) continue;
 
     const lookup = new Map();
+    const weighed = new Map();
     const nameOverrides = new Map(
       instance.overrides.filter(({ property }) => property === "m_Name").map(({ target, value }) => [target.id, value]),
     );
@@ -226,11 +268,18 @@ function prefabRules(prefab, modelGuid, importedNames, byGuid, visited = new Set
         if (!lookup.has(key)) lookup.set(key, { path });
         materialOverrides(lookup.get(key), Number(slot[1]), change.object.guid);
       }
+      const shape = change.property.match(weightSlot);
+      if (shape && Number(shape[1]) < 1024 && Number.isFinite(Number(change.value))) {
+        const key = path.join("\0");
+        if (!weighed.has(key)) weighed.set(key, { path, weights: [] });
+        weighed.get(key).weights[Number(shape[1])] = Number(change.value);
+      }
     }
     materials.push(...lookup.values());
+    weights.push(...weighed.values());
   }
   visited.delete(prefab);
-  return { visibility, materials, renames };
+  return { visibility, materials, renames, weights };
 }
 
 function usesModel(prefab, modelGuid, byGuid, visited = new Set()) {
@@ -262,7 +311,7 @@ export async function readUnityPrefab(assets, pathsByGuid, modelPath, prefabPath
   const best = candidates[0];
   const prefab = prefabPath ? prefabs.find(({ path }) => path === prefabPath) :
     best && best.score !== candidates[1]?.score ? best.prefab : undefined;
-  if (!prefab) return { visibility: [], materials: [], renames: [], springs: [], springSettings: [], humanBones: [] };
+  if (!prefab) return { visibility: [], materials: [], renames: [], weights: [], springs: [], springSettings: [], springColliders: [], humanBones: [] };
 
   const meta = assets.get(modelPath + ".meta");
   const metaSource = meta ? await meta.text() : "";
@@ -273,7 +322,9 @@ export async function readUnityPrefab(assets, pathsByGuid, modelPath, prefabPath
     ...prefabRules(prefab, modelGuid, importedNames, byGuid),
     springs: springRules(prefab, modelGuid, importedNames, byGuid),
     // Every PhysBone's settings, including the ones whose bone could not be named.
-    springSettings: prefab.springs.map(({ pull, spring, stiffness, gravity }) => ({ pull, spring, stiffness, gravity })),
+    springSettings: prefab.springs.map(({ pull, spring, stiffness, gravity, radius }) => ({ pull, spring, stiffness, gravity, radius })),
+    // Every collider a PhysBone uses, for the chains whose bones could not be named.
+    springColliders: colliderRules(prefab, [...new Set(prefab.springs.flatMap(({ colliderIds }) => colliderIds))], localPaths(prefab, importedNames)),
     // The bones of the humanoid skeleton, as listed in the model's import settings.
     humanBones: [...metaSource.matchAll(/^[ \t]*-[ \t]*boneName:[ \t]*(.+?)[ \t]*\r?$/gm)].map((match) => unityString(match[1])),
   };
@@ -377,6 +428,15 @@ export function applyUnityPrefab(root, settings, fxDefaults = new Map()) {
     if (hidden) mesh.userData.machiHidden = true;
     else delete mesh.userData.machiHidden;
   });
+  // The blend shapes the prefab sets: the body tucked in under the clothes, a fuller face...
+  for (const { path, weights } of settings.weights ?? []) {
+    const node = findNode(path);
+    const influences = node?.isMesh ? node.morphTargetInfluences : null;
+    if (!influences) continue;
+    weights.forEach((value, index) => {
+      if (Number.isFinite(value) && index < influences.length) influences[index] = Math.min(Math.max(value / 100, -1), 2);
+    });
+  }
   assigned.inactive = inactive;
   assigned.disabled = disabled;
   return assigned;

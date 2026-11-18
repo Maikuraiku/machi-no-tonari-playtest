@@ -2,10 +2,10 @@
 // each layer colours the ground by one thing (height, land use, people, era, cost) and shades it
 // by the relief. Close in, the ground comes from the 1 m sampler, and local streets and buildings
 // are drawn on top. The raster part needs no canvas, so it runs in a worker and in Node alike.
-import { BUILT_USES, ERAS, USE } from './develop.js?v=online-1794946480502'
-import { fbm } from './noise.js?v=online-1794946480502'
-import { LAND, bicubic, bilinear } from './terrain.js?v=online-1794946480502'
-import { buildingsIn, streetsIn } from './streets.js?v=online-1794946480502'
+import { BUILT_USES, ERAS, USE } from './develop.js?v=online-1794980046418'
+import { fbm } from './noise.js?v=online-1794980046418'
+import { LAND, bicubic, bilinear } from './terrain.js?v=online-1794980046418'
+import { buildingsIn, streetsIn } from './streets.js?v=online-1794980046418'
 
 export const TILE = 256
 export const LEVELS = 8 // level 0 shows the whole region in one tile; each level halves the metres per pixel

@@ -3,7 +3,7 @@
 // proportions in the same clothes; everyone else still sees the round little resident.
 // Imported avatars are seen as they are, only without their heads.
 import * as THREE from 'three'
-import { createTrackedRig } from './tracking.js?v=online-1794946480502'
+import { createTrackedRig } from './tracking.js?v=online-1794980046418'
 
 // Camera layers for what only the wearer sees and what only everyone else sees.
 export const FIRST_PERSON_LAYER = 9

@@ -2,10 +2,10 @@
 // the forms smaller than a grid cell: the great river's channel, banks and levees drawn exactly
 // from the river's own geometry, streams in their beds, graded hillsides stepped into level lots,
 // paddies levelled plot by plot, and the small unevenness of woods and open land.
-import { BUILT_USES, USE } from './develop.js?v=online-1794946480502'
-import { chaikin, segmentIndex } from './geometry.js?v=online-1794946480502'
-import { fbm } from './noise.js?v=online-1794946480502'
-import { bicubic, bilinear, riverAlong } from './terrain.js?v=online-1794946480502'
+import { BUILT_USES, USE } from './develop.js?v=online-1794980046418'
+import { chaikin, segmentIndex } from './geometry.js?v=online-1794980046418'
+import { fbm } from './noise.js?v=online-1794980046418'
+import { bicubic, bilinear, riverAlong } from './terrain.js?v=online-1794980046418'
 
 export const WATER = { NONE: 0, RIVER: 1, STREAM: 2 }
 

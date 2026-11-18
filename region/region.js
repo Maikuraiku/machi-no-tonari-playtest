@@ -1,19 +1,21 @@
 // The whole region in one go: the land before people, how people developed it, who lives and
 // works where, where they travel, and the railways planned for them. Then the indexes that the
 // 1 m ground and the local streets ask, so any part of the map can be drawn down to the metre.
-import { BUILT_USES, ERAS, ROAD, USE } from './develop.js?v=online-1794946480502'
-import { developRegion } from './develop.js?v=online-1794946480502'
-import { desireLines, travelDemand } from './demand.js?v=online-1794946480502'
-import { divideRegion } from './districts.js?v=online-1794946480502'
-import { createFineTerrain, streamGeometry } from './fine.js?v=online-1794946480502'
-import { segmentIndex } from './geometry.js?v=online-1794946480502'
-import { seedOf } from './noise.js?v=online-1794946480502'
-import { densityStats, populate } from './population.js?v=online-1794946480502'
-import { STRUCTURE_NAMES, planRailways } from './rail.js?v=online-1794946480502'
-import { superblocks } from './streets.js?v=online-1794946480502'
-import { createTerrain } from './terrain.js?v=online-1794946480502'
+import { BUILT_USES, ERAS, ROAD, USE } from './develop.js?v=online-1794980046418'
+import { developRegion } from './develop.js?v=online-1794980046418'
+import { desireLines, travelDemand } from './demand.js?v=online-1794980046418'
+import { divideRegion } from './districts.js?v=online-1794980046418'
+import { createFineTerrain, streamGeometry } from './fine.js?v=online-1794980046418'
+import { segmentIndex } from './geometry.js?v=online-1794980046418'
+import { seedOf } from './noise.js?v=online-1794980046418'
+import { densityStats, populate } from './population.js?v=online-1794980046418'
+import { STRUCTURE_NAMES, planRailways } from './rail.js?v=online-1794980046418'
+import { superblocks } from './streets.js?v=online-1794980046418'
+import { createTerrain } from './terrain.js?v=online-1794980046418'
 
 export const REGION_SIZE = 20000 // metres on a side
+// Bumped whenever the generator's output changes, so towns, caches and fingerprints can tell.
+export const REGION_VERSION = 1
 
 // Half the width of the land a double track takes, by structure (地平, 盛土, 高架, 橋梁, 切土;
 // the tunnels take none at the surface).

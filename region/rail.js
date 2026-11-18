@@ -3,13 +3,13 @@
 // richest and a vertical profile that keeps within a 25‰ gradient. The profile decides each
 // stretch's structure (viaduct, cutting, tunnel, bridge...) and so its cost. Lines are added
 // one at a time, the best value first, while their benefits outweigh their costs.
-import { Heap } from './heap.js?v=online-1794946480502'
-import { BUILT_USES, ROAD, USE } from './develop.js?v=online-1794946480502'
-import { activeShare } from './demand.js?v=online-1794946480502'
-import { boxBlur } from './grid.js?v=online-1794946480502'
-import { crossing, segmentDistance, segmentIndex, simplify } from './geometry.js?v=online-1794946480502'
-import { createNamer } from './names.js?v=online-1794946480502'
-import { LAND, bilinear, riverAlong } from './terrain.js?v=online-1794946480502'
+import { Heap } from './heap.js?v=online-1794980046418'
+import { BUILT_USES, ROAD, USE } from './develop.js?v=online-1794980046418'
+import { activeShare } from './demand.js?v=online-1794980046418'
+import { boxBlur } from './grid.js?v=online-1794980046418'
+import { crossing, segmentDistance, segmentIndex, simplify } from './geometry.js?v=online-1794980046418'
+import { createNamer } from './names.js?v=online-1794980046418'
+import { LAND, bilinear, riverAlong } from './terrain.js?v=online-1794980046418'
 
 export const STRUCTURE = { GRADE: 0, EMBANKMENT: 1, VIADUCT: 2, BRIDGE: 3, CUTTING: 4, COVERED: 5, TUNNEL: 6, SHIELD: 7 }
 export const STRUCTURE_NAMES = ['地平', '盛土', '高架', '橋梁', '切土', '開削トンネル', '山岳トンネル', 'シールドトンネル']

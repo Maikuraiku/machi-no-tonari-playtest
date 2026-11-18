@@ -3,15 +3,15 @@
 // scale, so a resident walks in through the door. To keep a whole town light, the inside of a
 // storey is only built when someone is near enough to see it.
 import * as THREE from 'three'
-import { CUT, ITEMS, OPENINGS, boundsOf, colliders, doorKey, floorHeight, frontDoors, heightOf, inRoom, pointIn, stairLayout, storeyOf, storeyShape, upSteps, yardHeight } from './design.js?v=online-1794946480502'
-import { windowGlass } from './glass.js?v=online-1794946480502'
-import { drawItem } from './items.js?v=online-1794946480502'
-import { Batch, Shade, disposeGroup, finishMaterial, frameMaterial, material, textTexture } from './kit.js?v=online-1794946480502'
-import { buildLift } from './lifts.js?v=online-1794946480502'
-import { drawDecor, drawStair, drawSteps, drawWell, drawYard } from './parts.js?v=online-1794946480502'
-import { designOf } from './plans.js?v=online-1794946480502'
+import { CUT, ITEMS, OPENINGS, boundsOf, colliders, doorKey, floorHeight, frontDoors, heightOf, inRoom, pointIn, stairLayout, storeyOf, storeyShape, upSteps, yardHeight } from './design.js?v=online-1794980046418'
+import { windowGlass } from './glass.js?v=online-1794980046418'
+import { drawItem } from './items.js?v=online-1794980046418'
+import { Batch, Shade, disposeGroup, finishMaterial, frameMaterial, material, textTexture } from './kit.js?v=online-1794980046418'
+import { buildLift } from './lifts.js?v=online-1794980046418'
+import { drawDecor, drawStair, drawSteps, drawWell, drawYard } from './parts.js?v=online-1794980046418'
+import { designOf } from './plans.js?v=online-1794980046418'
 
-export { ROOM_COLORS, ROOM_LABELS, STYLE_FLOORS, STYLE_LABELS } from './design.js?v=online-1794946480502'
+export { ROOM_COLORS, ROOM_LABELS, STYLE_FLOORS, STYLE_LABELS } from './design.js?v=online-1794980046418'
 
 export const SHOP_HOUSES = {
   // A shop on one tile: the shop floor behind a glass front, a store room, a toilet and a kitchenette at the back.

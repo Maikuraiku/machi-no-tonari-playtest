@@ -1,5 +1,5 @@
 // Tools for square grids stored row by row: distances, blurs, resampling and least-cost paths.
-import { Heap } from './heap.js?v=online-1794946480502'
+import { Heap } from './heap.js?v=online-1794980046418'
 
 export const D8X = Int8Array.of(1, 1, 0, -1, -1, -1, 0, 1)
 export const D8Z = Int8Array.of(0, 1, 1, 1, 0, -1, -1, -1)

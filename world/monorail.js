@@ -5,12 +5,14 @@
 // How the train runs is decided in monorail-line.js, from the clock alone; this file only
 // shows where it is. The train has no driver (ATO), so both its ends are windows.
 import * as THREE from 'three'
-import { BODY } from './design.js?v=online-1794946480502'
-import { windowGlass } from './glass.js?v=online-1794946480502'
-import { Batch, disposeGroup, glow, material } from './kit.js?v=online-1794946480502'
-import { BEAM, CAR, announcement, carDisplay, carOffsets, createLine, piersOf, platformDisplay } from './monorail-line.js?v=online-1794946480502'
+import { BODY } from './design.js?v=online-1794980046418'
+import { windowGlass } from './glass.js?v=online-1794980046418'
+import { Batch, disposeGroup, glow, material } from './kit.js?v=online-1794980046418'
+import { BEAM, CAR, announcement, carDisplay, carOffsets, createLine, piersOf, platformDisplay } from './monorail-line.js?v=online-1794980046418'
 
-export { planTrial } from './stations.js?v=online-1794946480502'
+export { planTrial } from './stations.js?v=online-1794980046418'
+// The cars and the boards of lights, for the region's route-map lines (route-transit.js).
+export { buildCar, createBoard, hangBoard }
 
 const HALF = CAR.width / 2
 const LONG = CAR.length / 2

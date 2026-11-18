@@ -3,17 +3,18 @@
 // VR cameras. Buildings are real: their walls stop a walker, their doors open, and stairs
 // lead to the storeys above.
 import * as THREE from 'three'
-import { createAvatars } from './world/avatars.js?v=online-1794946480502'
-import { SHOP_HOUSES, createBuilding } from './world/buildings.js?v=online-1794946480502'
-import { BODY as RADIUS, colliders, floorHeight, frontDoors, storeyShape, yardHeight } from './world/design.js?v=online-1794946480502'
-import { createEnvironment } from './world/environment.js?v=online-1794946480502'
-import { FIRST_PERSON_LAYER, THIRD_PERSON_LAYER } from './world/first-person.js?v=online-1794946480502'
-import { updateGlass } from './world/glass.js?v=online-1794946480502'
-import { TILE, disposeGroup, setAnisotropy, setDetail, textTexture } from './world/kit.js?v=online-1794946480502'
-import { createLiftControl } from './world/lift-control.js?v=online-1794946480502'
-import { createTransit, planTrial } from './world/monorail.js?v=online-1794946480502'
-import { createSound } from './world/sound.js?v=online-1794946480502'
-import { createVRMenu } from './world/vr-menu.js?v=online-1794946480502'
+import { createAvatars } from './world/avatars.js?v=online-1794980046418'
+import { SHOP_HOUSES, createBuilding } from './world/buildings.js?v=online-1794980046418'
+import { BODY as RADIUS, colliders, floorHeight, frontDoors, storeyShape, yardHeight } from './world/design.js?v=online-1794980046418'
+import { createEnvironment } from './world/environment.js?v=online-1794980046418'
+import { withRegion } from './world/region-layer.js?v=online-1794980046418'
+import { FIRST_PERSON_LAYER, THIRD_PERSON_LAYER } from './world/first-person.js?v=online-1794980046418'
+import { updateGlass } from './world/glass.js?v=online-1794980046418'
+import { TILE, disposeGroup, setAnisotropy, setDetail, textTexture } from './world/kit.js?v=online-1794980046418'
+import { createLiftControl } from './world/lift-control.js?v=online-1794980046418'
+import { createTransit, planTrial } from './world/monorail.js?v=online-1794980046418'
+import { createSound } from './world/sound.js?v=online-1794980046418'
+import { createVRMenu } from './world/vr-menu.js?v=online-1794980046418'
 
 const SPEED = 4.6
 const MODES = ['follow', 'first', 'overview', 'close']
@@ -126,7 +127,8 @@ export function initScene(container, callbacks = {}) {
   const rig = new THREE.Group()
   rig.add(camera)
   world.add(rig)
-  const environment = createEnvironment(world, renderer)
+  // (In a town made from the region map, the region's ground, buildings and monorail.)
+  const environment = withRegion(createEnvironment(world, renderer), world)
   const town = new THREE.Group()
   const markers = new THREE.Group()
   world.add(town, markers)
@@ -280,8 +282,9 @@ export function initScene(container, callbacks = {}) {
     const worldX = (x) => (x - map.originX) * TILE
     const worldZ = (z) => (z - map.originZ) * TILE
     const lots = [
-      { ...SHOP_HOUSES.shop, ...map.shop, target: { id: 'shop', kind: 'shop', ...map.shop }, label: '服屋' },
-      { ...SHOP_HOUSES.cafe, ...map.cafe, target: { id: 'cafe', kind: 'cafe', ...map.cafe }, label: 'カフェ' },
+      // (Only a town laid out on a region still has a shop and a cafe of its own.)
+      ...(map.shop ? [{ ...SHOP_HOUSES.shop, ...map.shop, target: { id: 'shop', kind: 'shop', ...map.shop }, label: '服屋' }] : []),
+      ...(map.cafe ? [{ ...SHOP_HOUSES.cafe, ...map.cafe, target: { id: 'cafe', kind: 'cafe', ...map.cafe }, label: 'カフェ' }] : []),
       ...(state.houses ?? []).map((house) => ({ ...house, target: { id: house.id, kind: 'house', x: house.x, z: house.z } })),
     ]
     const taken = new Set()
@@ -303,7 +306,7 @@ export function initScene(container, callbacks = {}) {
     transit.setLine(trial?.spec ?? null)
     // (A town starts with its plaza, its shop and its cafe only: every other building is one
     // that a resident has put up.)
-    environment.drawTown(map, taken, trial?.corridor ?? [])
+    environment.drawTown(map, taken, trial?.corridor ?? [], lots)
 
     const seen = new Set()
     for (const lot of lots) {
@@ -326,10 +329,12 @@ export function initScene(container, callbacks = {}) {
       }
       const x = worldX(lot.x - 0.5)
       const z = worldZ(lot.z - 0.5)
-      Object.assign(entry, { x, z, w: lot.w * TILE, d: lot.d * TILE, target: lot.target, kind: lot.target?.kind ?? 'scenery', myKeys: lot.myKeys ?? null })
-      entry.building.group.position.set(x, 0, z)
+      // A building stands at the height of its lot, `y0` (0 in an ordinary town, the ground it was
+      // built on in a region town): all of its own heights are measured from there.
+      Object.assign(entry, { x, z, w: lot.w * TILE, d: lot.d * TILE, target: lot.target, kind: lot.target?.kind ?? 'scenery', myKeys: lot.myKeys ?? null, y0: environment.levelOf(lot) })
+      entry.building.group.position.set(x, entry.y0, z)
       const { bounds } = entry.building
-      entry.box = new THREE.Box3(new THREE.Vector3(x + bounds.x0 - 0.15, 0, z + bounds.z0 - 0.15), new THREE.Vector3(x + bounds.x1 + 0.15, entry.building.height, z + bounds.z1 + 0.15))
+      entry.box = new THREE.Box3(new THREE.Vector3(x + bounds.x0 - 0.15, entry.y0, z + bounds.z0 - 0.15), new THREE.Vector3(x + bounds.x1 + 0.15, entry.y0 + entry.building.height, z + bounds.z1 + 0.15))
       // (The sliding windows of a living room are doors too, but visitors come to the front door.)
       const doorways = frontDoors(entry.building.design)
       const front = doorways.find((door) => door.opening.canopy) ?? doorways[0]
@@ -348,7 +353,7 @@ export function initScene(container, callbacks = {}) {
           markers.add(entry.label)
         }
       }
-      entry.label?.position.set((entry.box.min.x + entry.box.max.x) / 2, entry.building.height + 1.4, (entry.box.min.z + entry.box.max.z) / 2)
+      entry.label?.position.set((entry.box.min.x + entry.box.max.x) / 2, entry.y0 + entry.building.height + 1.4, (entry.box.min.z + entry.box.max.z) / 2)
       seen.add(lot.id)
     }
     for (const [id, entry] of entries) {
@@ -363,12 +368,13 @@ export function initScene(container, callbacks = {}) {
       entries.delete(id)
       if (home === entry || local.stair?.entry === entry) resettle = true
     }
-    fountain = { x: worldX(map.plaza.x), z: worldZ(map.plaza.z), radius: 1.9 }
+    // (The plaza is an open paved square now: nothing stands in the middle of it.)
+    fountain = null
     // The buildings, as the boxes that show in each other's windows.
     mirrored = [...entries.values()].map((entry) => ({ min: entry.box.min, max: entry.box.max, tint: entry.building.tint }))
 
     const key = `${map.width},${map.height},${map.originX},${map.originZ}`
-    if (key !== gridKey) {
+    if (key !== gridKey && !map.region) {
       gridKey = key
       if (grid) {
         markers.remove(grid)
@@ -495,7 +501,7 @@ export function initScene(container, callbacks = {}) {
       if (here.x < entry.x - 3 || here.x > entry.x + entry.w + 3 || here.z < entry.z - 3 || here.z > entry.z + entry.d + 3) continue
       if (local.level > 0 && entry !== home) continue
       const level = levelIn(entry)
-      const base = floorHeight(entry.building.design, level)
+      const base = entry.y0 + floorHeight(entry.building.design, level)
       for (const door of solidsOf(entry, level).doors) {
         if (door.auto || door.kind === 'door-platform' || Math.hypot(here.x - entry.x - door.x, here.z - entry.z - door.z) > 2.6) continue
         const miss = ray.distanceToPoint(point.set(entry.x + door.x, base + 1.0, entry.z + door.z))
@@ -511,17 +517,19 @@ export function initScene(container, callbacks = {}) {
   // entrance of a house, rising along steps), the porch and the steps of a lot, or the street.
   function groundAt() {
     if (local.ride) return transit.spotOf(local.ride).y
-    if (local.lift) return local.lift.lift.control.y
+    if (local.lift) return local.lift.entry.y0 + local.lift.lift.control.y
     if (home) {
       const { design } = home.building
-      return floorHeight(design, local.level) + (storeyShape(design, local.level)?.heightAt(here.x - home.x, here.z - home.z) ?? 0)
+      return home.y0 + floorHeight(design, local.level) + (storeyShape(design, local.level)?.heightAt(here.x - home.x, here.z - home.z) ?? 0)
     }
     for (const entry of entries.values()) {
       if (here.x >= entry.x && here.x <= entry.x + entry.w && here.z >= entry.z && here.z <= entry.z + entry.d) {
-        return yardHeight(entry.building.design, here.x - entry.x, here.z - entry.z)
+        // (In a region town, the open ground of a lot is the region's ground, levelled to its height.)
+        const yard = yardHeight(entry.building.design, here.x - entry.x, here.z - entry.z)
+        if (yard > 0 || !environment.region) return entry.y0 + yard
       }
     }
-    return 0
+    return environment.heightAt(here.x, here.z)
   }
 
   // ---- Lifts ----------------------------------------------------------------
@@ -539,7 +547,7 @@ export function initScene(container, callbacks = {}) {
   // way down, as in Japan) and, in the car, a voice that says where it is and what the doors do.
   function liftSounds(entry, lift, event, riding) {
     const gap = Math.hypot(here.x - entry.x - lift.x, here.z - entry.z - lift.z)
-    const level = Math.abs(here.y - lift.control.y) < 1.6
+    const level = Math.abs(here.y - entry.y0 - lift.control.y) < 1.6
     const volume = riding ? 1 : entry === home && level ? THREE.MathUtils.clamp(1 - gap / 9, 0, 0.8) : 0
     if (event.type === 'arrive') {
       sound.play(event.heading < 0 ? 'lift-down' : 'lift-up', volume)
@@ -554,7 +562,7 @@ export function initScene(container, callbacks = {}) {
     for (const entry of entries.values()) {
       if (!entry.building.lifts.length || !entry.close) continue
       if (here.x < entry.x - 2 || here.x > entry.x + entry.w + 2 || here.z < entry.z - 2 || here.z > entry.z + entry.d + 2) continue
-      forward.set(ray.origin.x - entry.x, ray.origin.y, ray.origin.z - entry.z)
+      forward.set(ray.origin.x - entry.x, ray.origin.y - entry.y0, ray.origin.z - entry.z)
       for (const lift of liftsOf(entry)) {
         const hit = lift.pick(forward, ray.direction, 60)
         if (!hit || (best && hit.distance >= best.distance)) continue
@@ -602,7 +610,7 @@ export function initScene(container, callbacks = {}) {
         if (ox < -1 || oz < -1 || ox > entry.w + 1 || oz > entry.d + 1) continue
         if (inCar(lift, ox, oz)) ridden = other
         else {
-          const spot = lift.stops.find((stop) => Math.abs(stop.y - other.y) < 0.6 && before(stop, ox, oz))
+          const spot = lift.stops.find((stop) => Math.abs(stop.y + entry.y0 - other.y) < 0.6 && before(stop, ox, oz))
           if (spot) callers.add(`${index}|${spot.level}`)
         }
       }
@@ -614,7 +622,7 @@ export function initScene(container, callbacks = {}) {
       }
       lift.callers = callers
       // Someone who rides this lift on another screen: the car keeps under their feet.
-      if (ridden && !riding) control.shadow(ridden.y, delta)
+      if (ridden && !riding) control.shadow(ridden.y - entry.y0, delta)
       // In the doorway, between the landing and the car, the doors wait.
       let blocked = false
       if (mine && landing && control.at === local.level) {
@@ -701,7 +709,7 @@ export function initScene(container, callbacks = {}) {
       const { design } = entry.building
       let level = 0
       for (let index = 0; index < design.storeys.length; index++) {
-        if (floorHeight(design, index) <= here.y + 0.6) level = index
+        if (entry.y0 + floorHeight(design, index) <= here.y + 0.6) level = index
       }
       if (onFloor(entry, level, here.x, here.z)) {
         home = entry
@@ -710,7 +718,7 @@ export function initScene(container, callbacks = {}) {
       here.y = groundAt()
       return
     }
-    here.y = 0
+    here.y = environment.heightAt(here.x, here.z)
   }
 
   const residentSpot = (resident) => ({
@@ -748,11 +756,11 @@ export function initScene(container, callbacks = {}) {
     const map = state.town
     if (!map) return
     const editing = Boolean(state.edit)
-    if (grid) grid.visible = editing
+    if (grid) grid.visible = editing && !state.town?.region
     selected.visible = editing && Boolean(state.selected)
     if (selected.visible) {
       selected.scale.set(TILE * 0.94, TILE * 0.94, 1)
-      selected.position.set((state.selected.x - map.originX) * TILE, 0.12, (state.selected.z - map.originZ) * TILE)
+      selected.position.set((state.selected.x - map.originX) * TILE, environment.heightAt((state.selected.x - map.originX) * TILE, (state.selected.z - map.originZ) * TILE) + 0.12, (state.selected.z - map.originZ) * TILE)
     }
     if (!editing) hover.visible = false
   }
@@ -817,11 +825,11 @@ export function initScene(container, callbacks = {}) {
       }
     } else if (steered) local.stair.held = null
     local.stair.s += local.stair.way * push * 0.8
-    const base = floorHeight(entry.building.design, stair.from)
+    const base = entry.y0 + floorHeight(entry.building.design, stair.from)
     const leave = (end, level) => {
       here.x = entry.x + end.at[0] + end.out[0] * (RADIUS + 0.16)
       here.z = entry.z + end.at[1] + end.out[1] * (RADIUS + 0.16)
-      here.y = floorHeight(entry.building.design, level)
+      here.y = entry.y0 + floorHeight(entry.building.design, level)
       local.level = level
       local.stair = null
       home = entry
@@ -855,7 +863,7 @@ export function initScene(container, callbacks = {}) {
     for (const entry of entries.values()) {
       if (out.x < entry.x || out.x > entry.x + entry.w || out.z < entry.z || out.z > entry.z + entry.d) continue
       for (let level = 0; level < entry.building.levels; level++) {
-        if (Math.abs(floorHeight(entry.building.design, level) - out.y) > 0.4 || !onFloor(entry, level, out.x, out.z)) continue
+        if (Math.abs(entry.y0 + floorHeight(entry.building.design, level) - out.y) > 0.4 || !onFloor(entry, level, out.x, out.z)) continue
         local.ride = null
         home = entry
         local.level = level
@@ -892,6 +900,7 @@ export function initScene(container, callbacks = {}) {
     }
     // Nobody walks through the piers of the monorail.
     if (local.level === 0 && transit.piers.length) [px, pz] = pushOut({ segments: [], boxes: transit.piers }, px, pz)
+    if (local.level === 0 && environment.region) [px, pz] = environment.pushOut(px, pz, pushOut)
     for (const entry of entries.values()) {
       // Upstairs, only the building one stands in matters.
       if (local.level > 0 && entry !== home) continue
@@ -1007,7 +1016,7 @@ export function initScene(container, callbacks = {}) {
       const edge = TILE / 2 - RADIUS
       here.x = THREE.MathUtils.clamp(here.x + travelX, Math.max(sketching.x - 5, -map.originX * TILE - edge), Math.min(sketching.x + sketching.w + 5, (map.width - 1 - map.originX) * TILE + edge))
       here.z = THREE.MathUtils.clamp(here.z + travelZ, Math.max(sketching.z - 5, -map.originZ * TILE - edge), Math.min(sketching.z + sketching.d + 5, (map.height - 1 - map.originZ) * TILE + edge))
-      const ground = floorHeight(sketching.building.design, Math.min(state.design.level ?? 0, sketching.building.levels - 1))
+      const ground = sketching.y0 + floorHeight(sketching.building.design, Math.min(state.design.level ?? 0, sketching.building.levels - 1))
       here.y += (ground - here.y) * (1 - Math.exp(-10 * delta))
       local.stair = null
       local.lift = null
@@ -1068,7 +1077,7 @@ export function initScene(container, callbacks = {}) {
     } else if (onFloor(home, level, here.x, here.z)) spot = [here.x - home.x, here.z - home.z]
     else spot = storeyShape(design, level)?.rooms[0]?.at
     if (!spot) return false
-    here.set(home.x + spot[0], floorHeight(design, level), home.z + spot[1])
+    here.set(home.x + spot[0], home.y0 + floorHeight(design, level), home.z + spot[1])
     local.level = level
     route.length = 0
     snapCamera = true
@@ -1107,7 +1116,7 @@ export function initScene(container, callbacks = {}) {
         entry.building.show(view)
       }
       if (view.cut && view.level + 1 < entry.building.levels) {
-        ceiling = { y: floorHeight(entry.building.design, view.level + 1) - 0.4, x0: entry.x, z0: entry.z, x1: entry.x + entry.w, z1: entry.z + entry.d }
+        ceiling = { y: entry.y0 + floorHeight(entry.building.design, view.level + 1) - 0.4, x0: entry.x, z0: entry.z, x1: entry.x + entry.w, z1: entry.z + entry.d }
       }
       if (!entry.close) continue
       if (entry.building.lifts.length) runLifts(entry, delta)
@@ -1119,7 +1128,7 @@ export function initScene(container, callbacks = {}) {
         if (!door.auto) return doorOpen(entry, known) ? 1 : 0
         const x = entry.x + door.x
         const z = entry.z + door.z
-        const near = (spot) => Math.abs(spot.y - door.y) < 1.4 && Math.hypot(spot.x - x, spot.z - z) < 2.2
+        const near = (spot) => Math.abs(spot.y - entry.y0 - door.y) < 1.4 && Math.hypot(spot.x - x, spot.z - z) < 2.2
         return (passable(entry, known) && near(here)) || (!locked(entry, known.lock) && others.some(near)) ? 1 : 0
       })
     }
@@ -1154,7 +1163,7 @@ export function initScene(container, callbacks = {}) {
     // Designing a building, the camera circles its lot; the map view only makes sense outdoors.
     const mapView = mode === 'overview' && !home && !draft
     const target = draft
-      ? point.set(draft.x + draft.w / 2, floorHeight(draft.building.design, Math.min(state.design.level ?? 0, draft.building.levels - 1)), draft.z + draft.d / 2)
+      ? point.set(draft.x + draft.w / 2, draft.y0 + floorHeight(draft.building.design, Math.min(state.design.level ?? 0, draft.building.levels - 1)), draft.z + draft.d / 2)
       : mapView ? pan : point.set(here.x, here.y + (mode === 'close' ? 1.0 : 1.25), here.z)
     if (snapCamera) focus.copy(target)
     else focus.lerp(target, 1 - Math.exp(-12 * delta))
@@ -1177,6 +1186,7 @@ export function initScene(container, callbacks = {}) {
       focus.y + Math.sin(tilt) * reach,
       focus.z + Math.cos(turn) * Math.cos(tilt) * reach,
     )
+    environment.keepAbove(camera.position)
     camera.lookAt(focus)
   }
 
@@ -1184,7 +1194,7 @@ export function initScene(container, callbacks = {}) {
     const chosen = MODES.includes(next) ? next : 'follow'
     if (chosen === mode) return
     if (chosen === 'overview') {
-      pan.set(here.x, 0, here.z)
+      pan.set(here.x, environment.heightAt(here.x, here.z), here.z)
       distance = Math.max(distance, 70)
       pitch = Math.max(pitch, 0.95)
     } else if (mode === 'overview') {
@@ -1211,7 +1221,7 @@ export function initScene(container, callbacks = {}) {
   function groundTile() {
     const map = state.town
     floor.constant = 0
-    if (!map || !raycaster.ray.intersectPlane(floor, point)) return null
+    if (!map || !(environment.pick(raycaster.ray, point) ?? raycaster.ray.intersectPlane(floor, point))) return null
     const exact = { x: point.x / TILE + map.originX, z: point.z / TILE + map.originZ }
     const tile = { x: Math.round(exact.x), z: Math.round(exact.z) }
     if (tile.x < 0 || tile.z < 0 || tile.x >= map.width || tile.z >= map.height) return null
@@ -1236,7 +1246,7 @@ export function initScene(container, callbacks = {}) {
     }
     if (home && !state.edit) {
       // Indoors, a click on the floor is somewhere to walk to on this storey.
-      floor.constant = -floorHeight(home.building.design, local.level)
+      floor.constant = -(home.y0 + floorHeight(home.building.design, local.level))
       if (!raycaster.ray.intersectPlane(floor, point)) return
       const spot = { x: point.x / TILE + local.ox, z: point.z / TILE + local.oz }
       route.length = 0
@@ -1278,7 +1288,7 @@ export function initScene(container, callbacks = {}) {
     const draft = designing()
     if (!draft) return null
     const level = Math.min(state.design.level ?? 0, draft.building.levels - 1)
-    floor.constant = -floorHeight(draft.building.design, level)
+    floor.constant = -(draft.y0 + floorHeight(draft.building.design, level))
     if (!raycaster.ray.intersectPlane(floor, point)) return null
     const x = point.x - draft.x
     const z = point.z - draft.z
@@ -1318,7 +1328,7 @@ export function initScene(container, callbacks = {}) {
     sketch.visible = Boolean(sketchData && draft)
     if (!sketch.visible) return
     const level = Math.min(state.design.level ?? 0, draft.building.levels - 1)
-    sketch.position.set(draft.x, floorHeight(draft.building.design, level), draft.z)
+    sketch.position.set(draft.x, draft.y0 + floorHeight(draft.building.design, level), draft.z)
   }
 
   const touches = new Map()
@@ -1353,10 +1363,11 @@ export function initScene(container, callbacks = {}) {
       const ground = groundTile()
       const size = state.placing ?? { w: 1, d: 1 }
       hover.visible = Boolean(ground)
+      environment.tint(hover, ground, size)
       if (ground) {
         hover.scale.set(size.w * TILE * 0.96, size.d * TILE * 0.96, 1)
         hover.position.set(
-          (ground.tile.x + (size.w - 1) / 2 - state.town.originX) * TILE, 0.11,
+          (ground.tile.x + (size.w - 1) / 2 - state.town.originX) * TILE, environment.heightAt((ground.tile.x + (size.w - 1) / 2 - state.town.originX) * TILE, (ground.tile.z + (size.d - 1) / 2 - state.town.originZ) * TILE) + 0.11,
           (ground.tile.z + (size.d - 1) / 2 - state.town.originZ) * TILE,
         )
       }
@@ -1376,7 +1387,7 @@ export function initScene(container, callbacks = {}) {
     if (touches.size === 2) {
       const [a, b] = [...touches.values()]
       const spread = Math.hypot(a.x - b.x, a.y - b.y)
-      if (pinch > 0 && spread > 0) distance = THREE.MathUtils.clamp(distance * pinch / spread, 2.5, 260)
+      if (pinch > 0 && spread > 0) distance = THREE.MathUtils.clamp(distance * pinch / spread, 2.5, environment.reach())
       pinch = spread
       touch.moved = true
       return
@@ -1428,7 +1439,7 @@ export function initScene(container, callbacks = {}) {
   canvas.addEventListener('wheel', (event) => {
     event.preventDefault()
     if ((mode === 'first' || mode === 'close') && !designing()) return
-    distance = THREE.MathUtils.clamp(distance * Math.exp(event.deltaY * 0.0011), 2.5, 260)
+    distance = THREE.MathUtils.clamp(distance * Math.exp(event.deltaY * 0.0011), 2.5, environment.reach())
   }, { passive: false })
 
   // Looking round with the mouse held by the page. The raw movement of the mouse is asked for
@@ -2019,7 +2030,9 @@ export function initScene(container, callbacks = {}) {
 
   // Puts the player down at a spot given in metres, and works out which floor that is.
   function arriveAt(x, z) {
-    here.set(x, 0, z)
+    // (On a lot one arrives at the lot's own height, even before the ground round it has come in.)
+    const lot = [...entries.values()].find((entry) => x >= entry.x && x <= entry.x + entry.w && z >= entry.z && z <= entry.z + entry.d)
+    here.set(x, lot ? lot.y0 : environment.heightAt(x, z), z)
     local.x = x / TILE + local.ox
     local.z = z / TILE + local.oz
     local.stair = null

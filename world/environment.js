@@ -2,11 +2,11 @@
 import * as THREE from 'three'
 import { Sky } from 'three/addons/objects/Sky.js'
 import { Water } from 'three/addons/objects/Water.js'
-import { Batch, TILE, disposeGroup, fbm, glass, glow, hash, material, waterNormals } from './kit.js?v=online-1794946480502'
-import { createClouds } from './clouds.js?v=online-1794946480502'
-import { createGrass } from './grass.js?v=online-1794946480502'
-import { drawPoles, manholeMesh, stopLegends } from './street.js?v=online-1794946480502'
-import { createTrees } from './trees.js?v=online-1794946480502'
+import { Batch, TILE, disposeGroup, fbm, glass, glow, hash, material, waterNormals } from './kit.js?v=online-1794980046418'
+import { createClouds } from './clouds.js?v=online-1794980046418'
+import { createGrass } from './grass.js?v=online-1794980046418'
+import { drawPoles, manholeMesh, stopLegends } from './street.js?v=online-1794980046418'
+import { createTrees } from './trees.js?v=online-1794980046418'
 
 const SEA_LEVEL = -1.7
 const ROAD_HALF = 2.9 // half the width of the carriageway; the rest of a road tile is pavement
@@ -185,7 +185,7 @@ export function createEnvironment(scene, renderer) {
         picture.fillRect(x * scale + (paved(x - 1, z) ? 0 : 1), z * scale + (paved(x, z - 1) ? 0 : 1),
           scale - (paved(x - 1, z) ? 0 : 1) - (paved(x + 1, z) ? 0 : 1), scale - (paved(x, z - 1) ? 0 : 1) - (paved(x, z + 1) ? 0 : 1))
       }
-      picture.fillStyle = '#c4bca8'
+      picture.fillStyle = '#4a4d4f'
       picture.fillRect(town.plaza.x * scale, town.plaza.z * scale, scale, scale)
       groundPicture?.map.dispose()
       const map = new THREE.CanvasTexture(canvas)
@@ -203,8 +203,8 @@ export function createEnvironment(scene, renderer) {
     const manholes = []
     const legends = []
 
-    for (const { x, z } of town.roads) {
-      if (`${x},${z}` === plazaKey) continue
+    // (The plaza, where newcomers arrive, is an ordinary crossroads.)
+    for (const { x, z } of [...town.roads.filter((road) => `${road.x},${road.z}` !== plazaKey), town.plaza]) {
       const cx = worldX(x)
       const cz = worldZ(z)
       const links = [[0, -1], [1, 0], [0, 1], [-1, 0]].map(([dx, dz]) => paved(x + dx, z + dz))
@@ -315,30 +315,6 @@ export function createEnvironment(scene, renderer) {
       }
     }
 
-    // The plaza: a paved square with a fountain, benches and lamps.
-    const px = worldX(town.plaza.x)
-    const pz = worldZ(town.plaza.z)
-    batch.slab(material('pavers'), px - TILE / 2, pz - TILE / 2, px + TILE / 2, pz + TILE / 2, 0.05)
-    batch.cylinder(material('concrete', '#dedbd2'), px, 0.05, pz, 1.75, 0.5, 20)
-    batch.cylinder(glass('#3a6d7c'), px, 0.5, pz, 1.52, 0.07, 20)
-    batch.cylinder(material('concrete', '#e6e3da'), px, 0.5, pz, 0.26, 1.0, 10, 0.16)
-    batch.cylinder(material('concrete', '#e6e3da'), px, 1.5, pz, 0.62, 0.12, 14, 0.7)
-    batch.cylinder(glass('#4d8795'), px, 1.6, pz, 0.6, 0.04, 14)
-    const timber = material('wood', '#c9b392')
-    const iron = material('#3d4447', '#ffffff', { roughness: 0.6, metalness: 0.5 })
-    for (const [bx, bz, turn] of [[-2.9, 2.6, 0], [2.9, -2.6, 0], [2.7, 2.9, Math.PI / 2], [-2.7, -2.9, Math.PI / 2]]) {
-      batch.box(timber, px + bx, 0.5, pz + bz, 1.7, 0.07, 0.46, turn)
-      batch.box(timber, px + bx + Math.sin(turn) * -0.22, 0.83, pz + bz + Math.cos(turn) * -0.22, 1.7, 0.36, 0.06, turn)
-      for (const side of [-0.7, 0.7]) {
-        batch.box(iron, px + bx + Math.cos(turn) * side, 0.27, pz + bz - Math.sin(turn) * side, 0.07, 0.46, 0.44, turn)
-      }
-    }
-    const lampSpots = [[px - 3.4, pz - 3.4], [px + 3.4, pz + 3.4], [px + 3.4, pz - 3.4], [px - 3.4, pz + 3.4]]
-    for (const [lx, lz] of lampSpots) {
-      batch.cylinder(iron, lx, 0, lz, 0.09, 4.3, 8, 0.06)
-      batch.cylinder(iron, lx, 4.3, lz, 0.32, 0.1, 8, 0.16)
-      batch.cylinder(glow('#fff1cf', 0.9), lx, 4.05, lz, 0.2, 0.25, 8)
-    }
 
     // Utility poles carry the lines along the roads: each pole is joined to the next one along
     // the same line, up to 40 m on (across a junction too); a pole at the end of a line is held

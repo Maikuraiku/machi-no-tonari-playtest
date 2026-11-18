@@ -3,7 +3,7 @@
 // carpet. The tufts follow the viewer: the same tuft always grows on the same spot, and only
 // the spots within reach are planted.
 import * as THREE from 'three'
-import { hash } from './kit.js?v=online-1794946480502'
+import { hash } from './kit.js?v=online-1794980046418'
 
 const REACH = 17 // how far from the viewer tufts grow (metres)
 const SPACING = 0.34 // one tuft to a square of this size

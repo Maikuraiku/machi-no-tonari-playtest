@@ -5,10 +5,10 @@
 //
 // The large forms are drawn on a 20 m grid. Valleys are carved by running a river-incision and
 // soil-creep model on a 40 m grid, and the result is added back onto the 20 m grid.
-import { Heap } from './heap.js?v=online-1794946480502'
-import { normals, resample } from './geometry.js?v=online-1794946480502'
-import { D8L, D8X, D8Z } from './grid.js?v=online-1794946480502'
-import { fbm, noise, random, smoothstep } from './noise.js?v=online-1794946480502'
+import { Heap } from './heap.js?v=online-1794980046418'
+import { normals, resample } from './geometry.js?v=online-1794980046418'
+import { D8L, D8X, D8Z } from './grid.js?v=online-1794980046418'
+import { fbm, noise, random, smoothstep } from './noise.js?v=online-1794980046418'
 
 // What each 20 m cell of the natural land is.
 export const LAND = { PLATEAU: 0, TERRACE: 1, LOWLAND: 2, HILLS: 3, CHANNEL: 4 }

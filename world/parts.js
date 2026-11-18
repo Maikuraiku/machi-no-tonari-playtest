@@ -2,9 +2,9 @@
 // handrails, short flights of steps, the car of a lift, and what stands on the land round the
 // house (porch, path, parking). All of it is drawn at real size from the design.
 import * as THREE from 'three'
-import { stairLayout, yardHeight } from './design.js?v=online-1794946480502'
-import { drawItem } from './items.js?v=online-1794946480502'
-import { finishMaterial, glow, hash, material } from './kit.js?v=online-1794946480502'
+import { stairLayout, yardHeight } from './design.js?v=online-1794980046418'
+import { drawItem } from './items.js?v=online-1794980046418'
+import { finishMaterial, glow, hash, material } from './kit.js?v=online-1794980046418'
 
 const UP = new THREE.Vector3(0, 1, 0)
 const at = ([x, z], y) => new THREE.Vector3(x, y, z)

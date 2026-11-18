@@ -6,8 +6,8 @@
 import {
   FINISHES, FRAME_COLORS, ITEMS, ITEM_GROUPS, OPENINGS, RAILS, ROOFS, ROOM_COLORS, ROOM_LABELS, STAIR_LOOKS, STYLE_LABELS, WALL_DECOR,
   stairLayout, storeyShape,
-} from "./world/design.js?v=online-1794946480502";
-import { TOOLS, WALL_KINDS, createEditor } from "./world/editor.js?v=online-1794946480502";
+} from "./world/design.js?v=online-1794980046418";
+import { TOOLS, WALL_KINDS, createEditor } from "./world/editor.js?v=online-1794980046418";
 
 const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",

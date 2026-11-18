@@ -2,7 +2,7 @@
 // its own doors, the indicators that show where it is, and the buttons in the car and on
 // every landing. How it runs is decided elsewhere (lift-control.js); this only shows it.
 import * as THREE from 'three'
-import { Batch, finishMaterial, glow, material } from './kit.js?v=online-1794946480502'
+import { Batch, finishMaterial, glow, material } from './kit.js?v=online-1794980046418'
 
 // The clear width of the doors and the height inside the car, in metres.
 const DOOR = 0.8

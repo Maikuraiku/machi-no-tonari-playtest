@@ -15,7 +15,7 @@
 //  - a wall-hung gas water heater 350 x 530 x 170 mm, its bottom about 0.6 m above the ground;
 //    the gas meter below it; the electricity meter about 1.8 m up, where it can be read;
 //  - vent hoods about 2.3-2.9 m above the ground.
-import { boxCorners, frontDoors, storeyShape, yardHeight } from './design.js?v=online-1794946480502'
+import { boxCorners, frontDoors, storeyShape, yardHeight } from './design.js?v=online-1794980046418'
 
 const round = (value) => Math.round(value * 1000) / 1000
 

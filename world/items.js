@@ -1,9 +1,9 @@
 // Furniture and garden things, each drawn around its own middle: x across, z towards its
 // front, standing on y = 0. Sizes follow the catalogue in design.js.
 import * as THREE from 'three'
-import { ITEMS, hash } from './design.js?v=online-1794946480502'
-import { windowGlass } from './glass.js?v=online-1794946480502'
-import { glass, glow, material } from './kit.js?v=online-1794946480502'
+import { ITEMS, hash } from './design.js?v=online-1794980046418'
+import { windowGlass } from './glass.js?v=online-1794980046418'
+import { glass, glow, material } from './kit.js?v=online-1794980046418'
 
 const wood = (tint = '#b08a62') => material('wood', tint)
 const paint = (colour, roughness = 0.6, metalness = 0) => material(colour, '#ffffff', { roughness, metalness })

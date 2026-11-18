@@ -2,7 +2,7 @@
 // with openings (doors and windows) cut into them, finishes on both faces, rooms, furniture and
 // stairs. Everything here is plain geometry in metres, measured from the north-west corner of
 // the lot, so that the 3D view, the collisions, the design tools and the tests share one model.
-import { STAIR_LOOKS, stairLayout } from './stairs.js?v=online-1794946480502'
+import { STAIR_LOOKS, stairLayout } from './stairs.js?v=online-1794980046418'
 
 export { STAIR_LOOKS, stairLayout }
 

@@ -1,9 +1,10 @@
-import { initScene } from "./scene.js?v=online-1794946480502";
-import { connectPresence } from "./presence.js?v=online-1794946480502";
-import { createVoice } from "./voice.js?v=online-1794946480502";
-import { createStudio } from "./studio.js?v=online-1794946480502";
-import { FINISHES, ITEMS, ITEM_GROUPS, OPENINGS, ROOM_COLORS, ROOM_LABELS, STYLE_FLOORS, STYLE_LABELS, WALL_DECOR } from "./world/design.js?v=online-1794946480502";
-import { TOOLS, WALL_KINDS } from "./world/editor.js?v=online-1794946480502";
+import { initScene } from "./scene.js?v=online-1794980046418";
+import { connectPresence } from "./presence.js?v=online-1794980046418";
+import { createVoice } from "./voice.js?v=online-1794980046418";
+import { createStudio } from "./studio.js?v=online-1794980046418";
+import { FINISHES, ITEMS, ITEM_GROUPS, OPENINGS, ROOM_COLORS, ROOM_LABELS, STYLE_FLOORS, STYLE_LABELS, WALL_DECOR } from "./world/design.js?v=online-1794980046418";
+import { TOOLS, WALL_KINDS } from "./world/editor.js?v=online-1794980046418";
+import { createRegionApp } from "./region-app.js?v=online-1794980046418";
 
 const $ = (id) => document.getElementById(id);
 const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({
@@ -20,7 +21,7 @@ for (let x = 2; x <= 15; x++) roadCells.push({ x, z: 7 });
 for (let z = 4; z <= 12; z++) if (z !== 7) roadCells.push({ x: 8, z });
 roadCells.push({ x: 12, z: 5 }, { x: 12, z: 6 });
 const initialTown = {
-  width: 18, height: 14, originX: 0, originZ: 0, plaza, shop: { x: 8, z: 3 }, cafe: { x: 12, z: 4 }, roads: roadCells,
+  width: 18, height: 14, originX: 0, originZ: 0, plaza, roads: roadCells,
 };
 const initialMe = { id: "local", name: "あなた", ...plaza, y: 0, coins: 500, owned: [] };
 const inviteFromUrl = new URL(location.href).searchParams.get("join") ?? "";
@@ -85,6 +86,12 @@ const town = () => state?.town ?? initialTown;
 const catalog = () => state?.catalog ?? [];
 const isHost = () => state?.hostId === current().id;
 const canEdit = () => state?.town.canEdit ?? isHost();
+// A town made from the region map: its region is generated on this screen (see region-app.js).
+const regionApp = createRegionApp({
+  state: () => state, notify: (text) => notify(text), update: () => update(), teleport: (x, z) => scene?.teleport(x, z),
+  action: (type, args) => action(type, args), confirmDialog: (options) => confirmDialog(options), openPanel: (tab, open) => openPanel(tab, open),
+  isHost: () => isHost(), current: () => current(), position: () => position,
+});
 const getHouse = (id) => state?.houses.find((home) => home.id === id);
 const inShop = () => place?.kind === "shop";
 const itemFor = (id) => catalog().find((item) => item.id === id);
@@ -479,7 +486,7 @@ const editing = () => !place && !designing() && (activeTab === "edit" || Boolean
 
 // The camera the game wants right now: editing looks down on the town, trying clothes moves in close.
 function wantedCamera() {
-  if (inShop() && preview) return "close";
+  if (preview && (inShop() || activeTab === "shop")) return "close";
   if (editing()) return "overview";
   return viewMode;
 }
@@ -516,7 +523,7 @@ function drawActionBar() {
     groups.push(`<span class="act-label">${STYLE_LABELS[building.style]}（${building.w}×${building.d}マス）を建てる場所をクリック</span>
       <button type="button" class="act" data-action="cancel-build"><kbd>Esc</kbd>やめる</button>`);
   } else if (editing()) {
-    groups.push(`<span class="act-label">${selection?.target ? (selection.from ? "移動先のマスをクリック" : "道路を敷くマスをクリック") : "街の編集中：建物か道路をクリック"}</span>
+    groups.push(`<span class="act-label">${selection?.target ? (selection.from ? "移動先のマスをクリック" : "道路を敷くマスをクリック") : `街の編集中：${town().shop || town().cafe ? "建物か道路" : "道路"}をクリック`}</span>
       ${selection ? '<button type="button" class="act" data-action="cancel-edit">選択を解除</button>' : ""}
       <button type="button" class="act" data-action="end-edit">編集を終える</button>`);
   }
@@ -575,11 +582,12 @@ function update() {
     return;
   }
   scene?.update({
-    session: sessionGeneration,
+    // (A region town counts as a new arrival once its region is shown: the resident is put where the town says.)
+    session: regionApp.session(sessionGeneration),
     player: avatar(me, 0),
     players: (state?.players ?? []).filter((player) => player.id !== me.id && player.online)
       .map((player, index) => avatar(player, index + 1)),
-    town: town(),
+    town: regionApp.sceneTown(town()),
     // Which doors stand open and which locks were left unlocked, house by house.
     doors: state?.doors ?? {},
     houses: (state?.houses ?? []).map((house) => ({ ...house, label: houseTitle(house) })),
@@ -587,13 +595,13 @@ function update() {
     selected: selection?.from ?? null,
     placing: building ? { w: building.w, d: building.d } : null,
     design: designDraft,
-    transit: transitPreview,
+    transit: transitPreview && !town().region,
   });
   scene?.setCamera(wantedCamera());
   scene?.setPreview(preview ? { outfit: preview, color: preview.color } : null);
   setText("balance", fmt(me.coins));
   setText("location-label", designing() ? "設計中" : home ? `${houseTitle(home)} ${place.level + 1}階`
-    : inShop() ? "服屋 ひだまり" : place?.kind === "cafe" ? "こもれび喫茶" : place?.kind === "station" ? place.label ?? "駅" : "ひだまり通り");
+    : inShop() ? "服屋 ひだまり" : place?.kind === "cafe" ? "こもれび喫茶" : place?.kind === "station" ? place.label ?? "駅" : regionApp.placeName(position ?? me) ?? "ひだまり通り");
   setText("room-status", state?.code ? "招待" : "接続");
   drawViewBar();
   drawActionBar();
@@ -603,6 +611,7 @@ function update() {
   setText("online-count", String(state?.players.filter((player) => player.online).length ?? 1));
   document.body.classList.toggle("designing", designing());
   drawMap();
+  regionApp.sync(state);
   renderPanel();
   syncInsets();
   syncVR();
@@ -614,6 +623,8 @@ function drawMap() {
   const ctx = map.getContext("2d");
   if (!ctx) return;
   const layout = town();
+  // A region town has its own map: the land round the player (see region-app.js).
+  if (regionApp.drawMap(ctx, map, layout, position ?? current())) return;
   // The map keeps the town's proportions however far it has grown.
   const scale = Math.min(map.width / layout.width, map.height / layout.height);
   const left = (map.width - layout.width * scale) / 2;
@@ -624,8 +635,7 @@ function drawMap() {
   ctx.fillRect(left, top, layout.width * scale, layout.height * scale);
   ctx.fillStyle = "#6f7377";
   for (const r of layout.roads) ctx.fillRect(left + r.x * scale, top + r.z * scale, scale + .4, scale + .4);
-  ctx.fillStyle = "#e9dfc8";
-  ctx.fillRect(left + layout.plaza.x * scale, top + layout.plaza.z * scale, scale, scale);
+  ctx.fillRect(left + layout.plaza.x * scale, top + layout.plaza.z * scale, scale + .4, scale + .4);
   for (const [spot, color] of [[layout.shop, "#d58a74"], [layout.cafe, "#cdb06b"], ...((state?.houses ?? []).map((h) => [h, h.ownerId === current().id ? "#1f7a6a" : "#5f8f97"]))]) {
     if (!spot) continue;
     ctx.fillStyle = color;
@@ -655,6 +665,7 @@ const titles = {
   shop: ["WARDROBE", "服屋 ひだまり"],
   home: ["MY HOMES", "家づくり"],
   edit: ["TOWN BUILDER", "街の編集"],
+  district: ["DISTRICTS", "地区"],
   avatar: ["AVATAR", "アバター"],
   settings: ["SETTINGS", "設定"],
 };
@@ -693,7 +704,7 @@ function renderPanel() {
     selectedHouse, planFloor, brush, me.owned, me.equipped, me.vrm,
     me.avatarHasAfk, me.afk, me.avatarExpressions, me.avatarExpressionValues, vrmUploading, me.coins, me.name,
     state?.layout, state?.players.map((p) => [p.id, p.name, p.online, p.muted, voice.silenced(p.id)]),
-    state?.editorIds, scene?.quality(), Boolean(state), settings, transitPreview, vrReady]);
+    state?.editorIds, regionApp.panelKey(), scene?.quality(), Boolean(state), settings, transitPreview, vrReady]);
   // Repainting would cut a brush stroke short, so the panel waits until it ends.
   if (renderKey === key || stroke) return;
   renderKey = key;
@@ -704,6 +715,7 @@ function renderPanel() {
   if (activeTab === "shop") node.innerHTML = shop();
   if (activeTab === "home") node.innerHTML = homes();
   if (activeTab === "edit") node.innerHTML = editor();
+  if (activeTab === "district") node.innerHTML = regionApp.panel();
   if (activeTab === "settings") node.innerHTML = settingsPanel();
   if (activeTab === "avatar") renderWardrobe(node, me);
 }
@@ -745,12 +757,11 @@ function people() {
 }
 
 function shop() {
-  if (!inShop()) return `<p class="lead">お店に入ると、アバターに似合う服を試着できます。歩いて入るか、下のボタンで向かいましょう。</p>
-    ${btn(`${icon("shop")}<span>服屋へ行く</span>`, "open-shop", "primary block")}`;
+  // (Towns have no shop building now: clothes are tried on and bought from here, wherever one is.)
   return `<p class="lead">試着して、気に入った服を選びましょう。</p>
     <div class="item-grid">${catalog().map(shopCard).join("")}</div>
     ${current().vrm ? '<p class="note">持ち込みアバターでは、対応する帽子を試着できます。</p>' : ""}
-    ${btn("お店を出る", "leave-shop", "ghost block")}`;
+    ${inShop() ? btn("お店を出る", "leave-shop", "ghost block") : ""}`;
 }
 
 function shopCard(item) {
@@ -877,15 +888,16 @@ function homeDetail(home, inside) {
 }
 
 function editor() {
+  if (town().region && !isHost()) return regionApp.editorNote();
   if (place) return `<p class="lead">建物の外に出てから編集できます。</p>
     ${btn("外に出る", "leave-home", "primary block")}`;
-  if (!canEdit()) return '<p class="lead">街の管理者から編集権限を受け取ると、建物と道路を動かせます。</p>';
+  if (!canEdit()) return `<p class="lead">街の管理者から編集権限を受け取ると、${town().shop || town().cafe ? "建物と道路" : "道路"}を動かせます。</p>`;
   const hint = selection?.target ? (selection.from ?
     "移動先のマスをクリックしてください。" : "道路を敷くマスをクリックしてください。") :
-    "建物か道路をクリックし、移動先を選んでください。";
+    (town().shop || town().cafe ? "建物か道路をクリックし、移動先を選んでください。" : "道路をクリックし、移動先を選ぶか、道路を追加してください。");
   return `<p class="lead">${hint}</p>
     <div class="stack">
-      <div class="row wrap">${btn("服屋を動かす", "select-shop", "soft grow")}${btn("カフェを動かす", "select-cafe", "soft grow")}</div>
+      ${town().shop || town().cafe ? `<div class="row wrap">${town().shop ? btn("服屋を動かす", "select-shop", "soft grow") : ""}${town().cafe ? btn("カフェを動かす", "select-cafe", "soft grow") : ""}</div>` : ""}
       ${btn(`${icon("plus")}<span>道路を追加</span>`, "add-road", "soft block")}
       ${selection?.target === "road" && selection.from ? btn("選んだ道路を取り除く", "remove-road", "danger block") : ""}
       <div class="row wrap">${btn(`${icon("undo")}<span>元に戻す</span>`, "undo", "ghost grow", town().canUndo ? "" : "disabled")}
@@ -1039,7 +1051,8 @@ function openRoomDialog() {
         <label class="field">表示名<input name="name" maxlength="24" required autofocus placeholder="あなたの名前"></label>
         <label class="field">招待コード<input name="code" maxlength="20" value="${escape(inviteFromUrl)}" placeholder="空欄なら新しい街をつくります"></label>
         <button class="btn primary block" type="submit" value="start">はじめる</button>
-      </form>`);
+      </form>
+      <a class="btn soft block" href="./region.html" style="margin-top:10px">地域の地図から街をつくる</a>`);
     return;
   }
   showDialog(`<h2>友達を街に呼ぶ</h2>
@@ -1053,7 +1066,8 @@ function openRoomDialog() {
       <label class="field">招待コード<input name="code" maxlength="20" value="${escape(inviteFromUrl)}" placeholder="友達の招待コード"></label>
       <div class="row wrap"><button class="btn primary grow" type="submit" value="join">街に参加する</button>
         <button class="btn ghost grow" type="submit" value="new">新しい街を作る</button></div>
-    </form>`);
+    </form>
+    <a class="btn soft block" href="./region.html" style="margin-top:10px">地域の地図から街をつくる</a>`);
 }
 
 function openNameDialog() {
@@ -1233,7 +1247,7 @@ function vrMenu() {
   if (spot.length) sections.push({ label: ride ? `その場で｜${ride.text}` : "その場で", columns: 3, buttons: spot });
   sections.push({
     label: "行き先", columns: 3, buttons: [
-      { label: "広場へ", action: "go-plaza" }, { label: "服屋へ", action: "open-shop" },
+      { label: "広場へ", action: "go-plaza" }, ...(town().shop ? [{ label: "服屋へ", action: "open-shop" }] : []),
       ...mine.slice(0, 1).map((house) => ({ label: `${kinds[house.kind]}へ`, action: "enter-home", data: { id: house.id } })),
     ],
   });
@@ -1258,7 +1272,7 @@ function syncVR() {
 // ---- Walking about the town -----------------------------------------------------------
 
 function openShop() {
-  scene?.visit("shop", { inside: true });
+  if (town().shop) scene?.visit("shop", { inside: true });
   openPanel("shop", panelOpen || !narrow());
 }
 
@@ -1278,6 +1292,7 @@ function enterPlace(next) {
 function clickTarget(target, exact, byHand = false) {
   const { x, z, kind, id } = target;
   const direct = byHand || scene?.camera() === "first";
+  if (activeTab === "district" && panelOpen && !building && !byHand && regionApp.pick(exact ?? { x, z })) return;
   if (activeTab === "edit" && canEdit() && !building) {
     if (selection) clickTile({ x, z }, exact);
     else if (["road", "shop", "cafe"].includes(kind)) {
@@ -1305,11 +1320,12 @@ function clickTarget(target, exact, byHand = false) {
 }
 
 function clickTile({ x, z }, exact, byHand = false) {
+  if (activeTab === "district" && panelOpen && !building && !byHand && regionApp.pick(exact ?? { x, z })) return;
   if (building) {
     run(async () => {
       const plan = building;
       const before = new Set((state?.houses ?? []).map((home) => home.id));
-      await action("build", { kind: plan.kind, style: plan.style, w: plan.w, d: plan.d, x, z });
+      await action("build", { kind: plan.kind, style: plan.style, w: plan.w, d: plan.d, x, z, ...(await regionApp.buildExtras({ x, z, w: plan.w, d: plan.d })) });
       selectedHouse = state.houses.find((home) => !before.has(home.id))?.id ?? null;
       planFloor = 0;
       building = null;
@@ -1349,8 +1365,12 @@ function walkTo(point) {
 function reportMove(next) {
   const moved = !position || position.x !== next.x || position.y !== next.y || position.z !== next.z;
   position = next;
-  if (moved && !scene?.vr.active()) drawMap();
-  if (state) presence?.push({ ...next, warp: next.warp ?? current().warp ?? 0, layout: state.layout });
+  if (moved && !scene?.vr.active()) {
+    drawMap();
+    regionApp.moved(next);
+  }
+  // (While the region of a region town is still being made, the 3D view shows no town: nothing to send.)
+  if (state && regionApp.sceneTown(town())) presence?.push({ ...next, warp: next.warp ?? current().warp ?? 0, layout: state.layout });
 }
 
 async function run(task) {
@@ -1566,7 +1586,7 @@ async function importAvatar(files) {
   update();
   try {
     load("ファイルを確認中");
-    const { prepareAvatar } = await import("./avatar-import.js?v=online-1794946480502");
+    const { prepareAvatar } = await import("./avatar-import.js?v=online-1794980046418");
     const model = await prepareAvatar(files, chooseAvatarModel, load, chooseFbxOptions);
     if (!model || generation !== sessionGeneration) return;
     url = URL.createObjectURL(model.blob);

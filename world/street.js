@@ -12,7 +12,7 @@
 // up. A pole at the end of a line is held by a stay wire with a yellow guard over its foot.
 // Poles stand about 30 m apart.
 import * as THREE from 'three'
-import { glow, material } from './kit.js?v=online-1794946480502'
+import { glow, material } from './kit.js?v=online-1794980046418'
 
 const V = (x, y, z) => new THREE.Vector3(x, y, z)
 

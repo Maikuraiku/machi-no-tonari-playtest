@@ -206,6 +206,7 @@ body.designing .hud, body.immersive .hud { display: none; }
 .house-button strong { display: block; font-size: 0.92rem; }
 .house-button small { display: block; color: var(--ink-3); font-size: 0.76rem; }
 .house-button .icon { color: var(--ink-3); }
+a.btn { text-decoration: none; }
 
 .upload { display: grid; gap: 6px; padding: 12px; border: 1.5px dashed var(--line-strong); border-radius: 15px; background: #fff; font-weight: 700; font-size: 0.9rem; }
 .upload input[type="file"] { width: 100%; font-size: 0.8rem; font-weight: 500; }

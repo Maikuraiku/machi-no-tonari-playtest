@@ -1,7 +1,7 @@
 // Who lives and works in each 20 m cell. Floor area follows from what stands there and how
 // tightly it is built (the floor area ratio); people follow from floor area.
-import { USE } from './develop.js?v=online-1794946480502'
-import { fbm } from './noise.js?v=online-1794946480502'
+import { USE } from './develop.js?v=online-1794980046418'
+import { fbm } from './noise.js?v=online-1794980046418'
 
 // For each use: floor area ratio (floor area over plot area), the residential share of the
 // floor area, square metres of home per resident, people per household, square metres of

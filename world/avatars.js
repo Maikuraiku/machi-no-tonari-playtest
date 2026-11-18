@@ -3,11 +3,11 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm'
-import { controlStates, createAnimator, createControlInput, validProgram } from './animator.js?v=online-1794946480502'
-import { downloadAvatar } from './avatar-download.js?v=online-1794946480502'
-import { createFirstPersonBody, hideHead } from './first-person.js?v=online-1794946480502'
-import { textTexture } from './kit.js?v=online-1794946480502'
-import { FINGER_JOINTS, createTrackedRig, followTracking } from './tracking.js?v=online-1794946480502'
+import { controlStates, createAnimator, createControlInput, validProgram } from './animator.js?v=online-1794980046418'
+import { downloadAvatar } from './avatar-download.js?v=online-1794980046418'
+import { createFirstPersonBody, hideHead } from './first-person.js?v=online-1794980046418'
+import { textTexture } from './kit.js?v=online-1794980046418'
+import { FINGER_JOINTS, createTrackedRig, followTracking } from './tracking.js?v=online-1794980046418'
 
 const AVATAR_HEIGHT = 1.6
 const VRM_EMOTIONS = ['happy', 'angry', 'sad', 'relaxed', 'surprised']

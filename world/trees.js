@@ -4,7 +4,7 @@
 // is darker inside than out. A few shapes of tree are grown once and then planted many times
 // over, each turned, sized and tinted a little differently.
 import * as THREE from 'three'
-import { hash, texture } from './kit.js?v=online-1794946480502'
+import { hash, texture } from './kit.js?v=online-1794980046418'
 
 // The shapes of tree, each as tall as it is at size 1 (metres):
 //  round: a broad, heavy crown on a short trunk, like a camphor tree or a cherry in leaf;

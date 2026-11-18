@@ -1,8 +1,12 @@
 // Generates the region away from the page and draws its map tiles on request. The page gets the
 // numbers and the lines to draw (roads, streams, railways); the grids stay here.
-import { boundarySegments } from './districts.js?v=online-1794946480502'
-import { generateRegion, summarizeRegion } from './region.js?v=online-1794946480502'
-import { TILE, describePoint, drawFeatures, prepareRender, renderTile, tileFeatures } from './render.js?v=online-1794946480502'
+import { boundarySegments } from './districts.js?v=online-1794980046418'
+import { generateRegion, summarizeRegion } from './region.js?v=online-1794980046418'
+import { regionWindow } from './window.js?v=online-1794980046418'
+import { regionFingerprint } from './fingerprint.js?v=online-1794980046418'
+import { GAME } from './game-worker.js?v=online-1794980046418'
+import { REGION_VERSION } from './region.js?v=online-1794980046418'
+import { TILE, describePoint, drawFeatures, prepareRender, renderTile, tileFeatures } from './render.js?v=online-1794980046418'
 
 let region = null
 let seed = null
@@ -16,6 +20,11 @@ self.onmessage = (event) => {
     else if (message.type === 'tile') tile(message)
     else if (message.type === 'point') point(message)
     else if (message.type === 'heights') heights(message)
+    else if (message.type === 'window') windowOf(message)
+    else if (Object.hasOwn(GAME, message.type)) {
+      if (!region || message.seed !== seed) self.postMessage({ type: message.type, id: message.id, missing: true })
+      else GAME[message.type](region, message)
+    }
   } catch (error) {
     self.postMessage({ type: 'error', id: message.id, request: message.type, message: String(error?.stack ?? error) })
   }
@@ -34,7 +43,8 @@ function generate(message) {
   })
   prepareRender(region)
   const summary = summarizeRegion(region)
-  self.postMessage({ type: 'ready', seed, summary, overlay: overlayOf(region) })
+  region.fingerprint = regionFingerprint(region)
+  self.postMessage({ type: 'ready', seed, summary, overlay: overlayOf(region), fingerprint: region.fingerprint, version: REGION_VERSION })
 }
 
 // Everything the page draws as lines and points.
@@ -134,6 +144,19 @@ function tile(message) {
 function point(message) {
   if (!region || message.seed !== seed) return
   self.postMessage({ type: 'point', id: message.id, seed, info: describePoint(region, message.x, message.z) })
+}
+
+// A square of the region for the 3D view (see window.js).
+function windowOf(message) {
+  if (!region || message.seed !== seed) {
+    self.postMessage({ type: 'window', id: message.id, seed: message.seed, missing: true })
+    return
+  }
+  const win = regionWindow(region, message)
+  const transfer = [win.heights.buffer, win.water.buffer, win.use.buffer, win.borders.town.buffer, win.borders.block.buffer]
+  for (const list of [win.roads, win.streets, win.streams]) for (const item of list) transfer.push(item.points.buffer)
+  for (const building of win.buildings) transfer.push(building.corners.buffer)
+  self.postMessage({ type: 'window', id: message.id, seed, window: win }, transfer)
 }
 
 // The 1 m ground of a window, for saving.
