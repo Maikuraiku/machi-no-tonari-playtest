@@ -10,8 +10,17 @@ import { TILE, describePoint, drawFeatures, prepareRender, renderTile, tileFeatu
 
 let region = null
 let seed = null
-const canvas = typeof OffscreenCanvas === 'function' ? new OffscreenCanvas(TILE, TILE) : null
-const context = canvas ? canvas.getContext('2d') : null
+let tileCanvas = null
+
+try {
+  if (typeof OffscreenCanvas === 'function' && typeof ImageData === 'function') {
+    const canvas = new OffscreenCanvas(TILE, TILE)
+    const context = canvas.getContext('2d')
+    if (context && typeof canvas.transferToImageBitmap === 'function') tileCanvas = { canvas, context }
+  }
+} catch {
+  // Some browsers expose OffscreenCanvas but cannot create a 2D canvas in a worker.
+}
 
 self.onmessage = (event) => {
   const message = event.data
@@ -21,7 +30,7 @@ self.onmessage = (event) => {
     else if (message.type === 'point') point(message)
     else if (message.type === 'heights') heights(message)
     else if (message.type === 'window') windowOf(message)
-    else if (Object.hasOwn(GAME, message.type)) {
+    else if (Object.prototype.hasOwnProperty.call(GAME, message.type)) {
       if (!region || message.seed !== seed) self.postMessage({ type: message.type, id: message.id, missing: true })
       else GAME[message.type](region, message)
     }
@@ -130,8 +139,9 @@ function tile(message) {
   }
   const rgba = new Uint8ClampedArray(TILE * TILE * 4)
   const info = renderTile(region, message.layer, message.level, message.tx, message.tz, rgba)
-  const features = tileFeatures(region, message.layer, info)
-  if (context) {
+  if (tileCanvas) {
+    const { canvas, context } = tileCanvas
+    const features = tileFeatures(region, message.layer, info)
     context.putImageData(new ImageData(rgba, TILE, TILE), 0, 0)
     drawFeatures(context, features, message.layer)
     const bitmap = canvas.transferToImageBitmap()

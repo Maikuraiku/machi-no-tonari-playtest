@@ -10,15 +10,6 @@
   <meta name="description" content="服屋に寄って、家を壁一枚から設計して、友達と街を育てるブラウザゲーム。">
   <title>まちのとなり</title>
   <link rel="stylesheet" href="./style.css?v=online-1794980046418">
-  <script type="importmap">
-    {
-      "imports": {
-        "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
-        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
-        "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3.4.2/lib/three-vrm.module.js"
-      }
-    }
-  </script>
 </head>
 <body>
   <svg class="icon-library" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
@@ -131,6 +122,6 @@
   </dialog>
 
   <!-- If the 3D libraries cannot be fetched, say so instead of leaving an empty screen. -->
-  <script type="module" src="./app.js?v=online-1794980046418" onerror="const toast = document.getElementById('toast'); toast.hidden = false; toast.textContent = '3D表示の部品を読み込めませんでした。通信環境を確認して、ページを読み込み直してください。'"></script>
+  <script type="module" src="./app.bundle.js?v=assets-20261118" onerror="const toast = document.getElementById('toast'); toast.hidden = false; toast.textContent = '3D表示の部品を読み込めませんでした。通信環境を確認して、ページを読み込み直してください。'"></script>
 </body>
 </html>
