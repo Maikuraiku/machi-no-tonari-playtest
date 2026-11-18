@@ -7,6 +7,8 @@
 // this seed is offered 「ゲームでこの丁目へ」 and the town's invite code, which friends use to build
 // it together, and is told who manages the district in that town (管理: 〇〇さん) or offered to make
 // it its own (自分の地区), which the game finishes after arrival (?district=ID&claim=built|bare).
+import { connectionMessage, TOWN_TIMEOUT, withDeadline } from '../town-connection.js'
+
 const SESSION = 'machi-no-tonari:session'
 const regionKey = (seed) => `machi-no-tonari:region:${seed}`
 const apiBase = new URL(document.querySelector('meta[name="machi-api-origin"]')?.content || './', location.href)
@@ -29,13 +31,18 @@ const stored = {
   },
 }
 
-async function call(path, { body, token } = {}) {
+function call(path, { body, token } = {}) {
+  return withDeadline((signal) => send(path, body, token, signal), TOWN_TIMEOUT)
+}
+
+async function send(path, body, token, signal) {
   const headers = token ? { Authorization: `Bearer ${token}` } : {}
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   const response = await fetch(new URL(path, apiBase), {
     method: body === undefined ? 'GET' : 'POST',
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal,
   })
   let data = {}
   try {
@@ -351,7 +358,7 @@ export function createGameLink({ worker, seed, fingerprint = () => null }) {
         }
         location.href = gameUrl(code, pack.at)
       } catch (error) {
-        show(error.message, 'failed')
+        show(connectionMessage(error), 'failed')
         make.disabled = false
       }
     })

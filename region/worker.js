@@ -1,12 +1,13 @@
 // Generates the region away from the page and draws its map tiles on request. The page gets the
 // numbers and the lines to draw (roads, streams, railways); the grids stay here.
-import { boundarySegments } from './districts.js?v=online-1794980046418'
-import { generateRegion, summarizeRegion } from './region.js?v=online-1794980046418'
-import { regionWindow } from './window.js?v=online-1794980046418'
-import { regionFingerprint } from './fingerprint.js?v=online-1794980046418'
-import { GAME } from './game-worker.js?v=online-1794980046418'
-import { REGION_VERSION } from './region.js?v=online-1794980046418'
-import { TILE, describePoint, drawFeatures, prepareRender, renderTile, tileFeatures } from './render.js?v=online-1794980046418'
+import { boundarySegments } from './districts.js'
+import { preloadBuildings } from './building-cache.js'
+import { generateRegion, summarizeRegion } from './region.js'
+import { regionWindow } from './window.js'
+import { regionFingerprint } from './fingerprint.js'
+import { GAME } from './game-worker.js'
+import { REGION_VERSION } from './region.js'
+import { TILE, describePoint, drawFeatures, prepareRender, renderTile, tileFeatures } from './render.js'
 
 let region = null
 let seed = null
@@ -44,12 +45,21 @@ function generate(message) {
   region = null
   const started = performance.now()
   let lastPost = 0
-  region = generateRegion({ seed }, (label, fraction) => {
+  const progress = (label, fraction) => {
     const time = performance.now()
     if (time - lastPost < 60 && fraction < 1) return
     lastPost = time
     self.postMessage({ type: 'progress', seed, label, fraction, elapsed: time - started })
+  }
+  const terrainShare = message.preloadBuildings ? 0.8 : 1
+  region = generateRegion({ seed }, (label, fraction) => {
+    progress(message.preloadBuildings && fraction === 1 ? '地形と地区の準備が完了' : label, fraction * terrainShare)
   })
+  if (message.preloadBuildings) {
+    region.buildingCache = preloadBuildings(region, (fraction) => {
+      progress('全域の建物を読み込んでいます', terrainShare + fraction * (1 - terrainShare))
+    })
+  }
   prepareRender(region)
   const summary = summarizeRegion(region)
   region.fingerprint = regionFingerprint(region)

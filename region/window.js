@@ -2,9 +2,9 @@
 // grid, and what covers it), the main roads, the local streets, the buildings, the streams, the
 // railways and the district borders that cross it. Plain numbers and typed arrays only, so it
 // can be sent from a worker to the page as it is.
-import { ROAD_WIDTH } from './develop.js?v=online-1794980046418'
-import { boundarySegments } from './districts.js?v=online-1794980046418'
-import { buildingsIn, streetsIn } from './streets.js?v=online-1794980046418'
+import { ROAD_WIDTH } from './develop.js'
+import { boundarySegments } from './districts.js'
+import { buildingsIn, streetsIn } from './streets.js'
 
 const overlaps = (ax0, az0, ax1, az1, bx0, bz0, bx1, bz1) => ax0 <= bx1 && bx0 <= ax1 && az0 <= bz1 && bz0 <= az1
 
@@ -50,7 +50,7 @@ export function regionWindow(region, { x0, z0, x1, z1, step = 2, buildings = tru
   }
   const streets = (withStreets ? streetsIn(region, x0, z0, x1, z1) : []).map((street) => ({ points: Float32Array.from(street.points), width: street.width }))
   const houses = buildings
-    ? buildingsIn(region, x0, z0, x1, z1)
+    ? region.buildingCache?.inWindow(x0, z0, x1, z1) ?? buildingsIn(region, x0, z0, x1, z1)
       .filter((building) => {
         const [bx0, bz0, bx1, bz1] = boxOf(building.corners)
         return overlaps(bx0, bz0, bx1, bz1, x0, z0, x1, z1)

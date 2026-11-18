@@ -4,7 +4,7 @@
 // storeys, with gabled roofs on houses and flat roofs on blocks; and the district borders.
 // Scene metres are region metres minus `origin`; heights are region heights minus `datum`.
 import * as THREE from 'three'
-import { Batch, disposeGroup, material } from './kit.js?v=online-1794980046418'
+import { Batch, disposeGroup, material } from './kit.js'
 
 // Land use as numbered by public/region/develop.js (USE).
 const USE = { WATER: 0, RIVERBED: 1, FOREST: 2, GREEN: 3, FIELD: 4, PADDY: 5, PARK: 6, LOW: 7, DENSE: 8, MID: 9, HIGH: 10, COMMERCIAL: 11, INDUSTRIAL: 12, PUBLIC: 13 }
@@ -34,13 +34,17 @@ const WALLS = {
 const ROOFS = [['kawara', '#6e7378'], ['kawara', '#4f565c'], ['slate', '#6a5446'], ['slate', '#4d5a66'], ['roofMetal', '#7c6a5b']]
 
 const clamp = (value, low, high) => Math.min(high, Math.max(low, value))
+const frameBudget = 5
+const yieldToPage = () => new Promise((resolve) => setTimeout(resolve, 0))
 // One material for every window's ground (disposeGroup frees geometry only).
 let groundMaterial = null
+let coarseMaterial = null
 
 export function createRegionScene() {
   const group = new THREE.Group()
   group.name = 'region'
   let shown = null
+  let revision = 0
 
   function heightIn(win, rx, rz) {
     const gx = clamp((rx - win.box.x0) / win.step, 0, win.width - 1)
@@ -86,30 +90,54 @@ export function createRegionScene() {
   }
 
   // The ground: one mesh over the window's grid.
-  function buildGround(win, origin, datum) {
+  function* buildGround(win, origin, datum, coarse) {
     const { width, depth, step, heights, use, water } = win
     const positions = new Float32Array(width * depth * 3)
     const colours = new Float32Array(width * depth * 3)
+    const normals = coarse ? null : new Float32Array(positions.length)
+    let low = Infinity
+    let high = -Infinity
     for (let j = 0; j < depth; j++) {
+      const north = Math.max(0, j - 1)
+      const south = Math.min(depth - 1, j + 1)
       for (let i = 0; i < width; i++) {
         const k = i + j * width
         positions[k * 3] = win.box.x0 + i * step - origin[0]
-        positions[k * 3 + 1] = heights[k] - datum
+        const y = heights[k] - datum
+        positions[k * 3 + 1] = y
         positions[k * 3 + 2] = win.box.z0 + j * step - origin[1]
+        low = Math.min(low, y)
+        high = Math.max(high, y)
         const colour = water[k] ? GROUND_LINEAR[USE.WATER] : GROUND_LINEAR[use[k]] ?? GROUND_LINEAR[USE.LOW]
         colours[k * 3] = colour.r
         colours[k * 3 + 1] = colour.g
         colours[k * 3 + 2] = colour.b
+        if (normals) {
+          const west = Math.max(0, i - 1)
+          const east = Math.min(width - 1, i + 1)
+          const nx = (heights[west + j * width] - heights[east + j * width]) / ((east - west) * step)
+          const nz = (heights[i + north * width] - heights[i + south * width]) / ((south - north) * step)
+          const length = Math.sqrt(nx * nx + 1 + nz * nz)
+          normals[k * 3] = nx / length
+          normals[k * 3 + 1] = 1 / length
+          normals[k * 3 + 2] = nz / length
+        }
       }
+      if (j % 8 === 7) yield
     }
     const geometry = new THREE.BufferGeometry()
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
     geometry.setAttribute('color', new THREE.BufferAttribute(colours, 3))
+    if (normals) geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3))
     geometry.setIndex(groundIndex(win, null))
-    geometry.computeVertexNormals()
+    const halfX = (width - 1) * step / 2
+    const halfZ = (depth - 1) * step / 2
+    const center = new THREE.Vector3(win.box.x0 - origin[0] + halfX, (low + high) / 2, win.box.z0 - origin[1] + halfZ)
+    geometry.boundingSphere = new THREE.Sphere(center, Math.hypot(halfX, (high - low) / 2, halfZ))
     groundMaterial ??= new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0 })
-    const mesh = new THREE.Mesh(geometry, groundMaterial)
-    mesh.receiveShadow = true
+    coarseMaterial ??= new THREE.MeshBasicMaterial({ vertexColors: true })
+    const mesh = new THREE.Mesh(geometry, coarse ? coarseMaterial : groundMaterial)
+    mesh.receiveShadow = !coarse
     mesh.name = 'region-ground'
     return mesh
   }
@@ -154,7 +182,7 @@ export function createRegionScene() {
     }
   }
 
-  function buildRoads(win, origin, datum) {
+  function* buildRoads(win, origin, datum) {
     const batch = new Batch()
     const asphalt = material('asphalt', '#ffffff')
     const pavement = material('sidewalk', '#ffffff')
@@ -166,18 +194,51 @@ export function createRegionScene() {
       ribbon(batch, asphalt, win, road.points, road.width, origin, datum, { lift: 0.08, side0: -share, side1: share })
       ribbon(batch, pavement, win, road.points, road.width, origin, datum, { lift: 0.18, side0: -1, side1: -share })
       ribbon(batch, pavement, win, road.points, road.width, origin, datum, { lift: 0.18, side0: share, side1: 1 })
+      yield
     }
-    for (const lane of win.streets) ribbon(batch, street, win, lane.points, lane.width, origin, datum, { lift: 0.06, step: 4 })
+    for (const lane of win.streets) {
+      ribbon(batch, street, win, lane.points, lane.width, origin, datum, { lift: 0.06, step: 4 })
+      yield
+    }
     const node = new THREE.Group()
     node.name = 'region-roads'
     batch.build(node, { cast: false, receive: true, where: 'out' })
     return node
   }
 
-  function buildBuildings(win, origin, datum) {
+  // Main roads remain legible on a region-wide view without extruding distant pavements.
+  function* buildOverviewRoads(win, origin, datum) {
+    const positions = []
+    const colours = []
+    const colour = new THREE.Color()
+    for (const road of win.roads) {
+      colour.set(road.kind >= ROAD.ARTERIAL ? '#e9d8ad' : '#dddcd4')
+      for (let k = 2; k < road.points.length; k += 2) {
+        for (const at of [k - 2, k]) {
+          const x = road.points[at]
+          const z = road.points[at + 1]
+          positions.push(x - origin[0], heightIn(win, x, z) - datum + 4, z - origin[1])
+          colours.push(colour.r, colour.g, colour.b)
+        }
+      }
+      yield
+    }
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colours, 3))
+    const paint = new THREE.LineBasicMaterial({ vertexColors: true })
+    paint.userData.ownMaterial = true
+    const roads = new THREE.LineSegments(geometry, paint)
+    roads.userData.ownMaterial = true
+    roads.name = 'region-overview-roads'
+    return roads
+  }
+
+  function* buildBuildings(win, origin, datum) {
     const batch = new Batch()
     const solids = []
     for (const building of win.buildings) {
+      yield
       const c = building.corners
       const corners = [[c[0], c[1]], [c[2], c[3]], [c[4], c[5]], [c[6], c[7]]]
       let low = Infinity
@@ -245,7 +306,7 @@ export function createRegionScene() {
     return { node, solids }
   }
 
-  function buildBorders(win, origin, datum) {
+  function* buildBorders(win, origin, datum) {
     const batch = new Batch()
     const town = material('#c8553d')
     const block = material('#e8e2d0')
@@ -263,6 +324,7 @@ export function createRegionScene() {
           const f1 = (p + 1) / pieces
           ribbon(batch, paint, win, [ax + (bx - ax) * f0, az + (bz - az) * f0, ax + (bx - ax) * f1, az + (bz - az) * f1], width, origin, datum, { lift: 0.25, step: 4 })
         }
+        yield
       }
     }
     const node = new THREE.Group()
@@ -271,17 +333,89 @@ export function createRegionScene() {
     return node
   }
 
+  // The outlines of managed districts ([{ colour, segments }], see region-pads.js outlinesIn): a
+  // band 1.2 m wide just inside each district, on the side its runs keep the district.
+  function* buildOutlines(win, origin, datum, outlines) {
+    const batch = new Batch()
+    for (const { colour, segments } of outlines) {
+      const paint = material(colour)
+      for (let k = 0; k + 3 < segments.length; k += 4) {
+        ribbon(batch, paint, win, [segments[k], segments[k + 1], segments[k + 2], segments[k + 3]], 2.4, origin, datum, { lift: 0.32, side0: 0, side1: 1, step: 4 })
+        if (k % 64 === 0) yield
+      }
+    }
+    const node = new THREE.Group()
+    node.name = 'region-district-outlines'
+    batch.build(node, { cast: false, receive: false, where: 'out' })
+    return node
+  }
+
+  // The terraces of the town's own lots: retaining walls where a pad meets lower or higher ground
+  // (see region-pads.js padGround) and the plaza's paving.
+  function* buildPads(win, origin, datum, walls, paving) {
+    const batch = new Batch()
+    const concrete = material('concrete', '#c9c5bc')
+    const stone = material('sidewalk', '#ffffff')
+    const v = (x, y, z) => new THREE.Vector3(x - origin[0], y - datum, z - origin[1])
+    for (const [k, wall] of walls.entries()) {
+      const facing = new THREE.Vector3(wall.nx, 0, wall.nz)
+      // (A little below the low side and above the high one, so no seam shows.)
+      batch.quad(concrete, v(wall.ax, wall.low[0] - 0.2, wall.az), v(wall.bx, wall.low[1] - 0.2, wall.bz),
+        v(wall.bx, wall.high[1] + 0.12, wall.bz), v(wall.ax, wall.high[0] + 0.12, wall.az), facing)
+      batch.quad(concrete, v(wall.bx, wall.low[1] - 0.2, wall.bz), v(wall.ax, wall.low[0] - 0.2, wall.az),
+        v(wall.ax, wall.high[0] + 0.12, wall.az), v(wall.bx, wall.high[1] + 0.12, wall.bz), facing.clone().negate())
+      if (k % 64 === 63) yield
+    }
+    for (const pave of paving) {
+      batch.face(stone, [v(pave.x0, pave.y + 0.03, pave.z0), v(pave.x0, pave.y + 0.03, pave.z1), v(pave.x1, pave.y + 0.03, pave.z1), v(pave.x1, pave.y + 0.03, pave.z0)])
+    }
+    const node = new THREE.Group()
+    node.name = 'region-pads'
+    batch.build(node, { cast: true, receive: true, where: 'out' })
+    return node
+  }
+
   // Shows a window. Far off, `roads` and `borders` can be left out (and the window holds no
-  // buildings): the ground alone, under the finer window near the viewer.
-  function show(win, { origin = [0, 0], datum = 0, borders = true, roads = true } = {}) {
-    clear()
-    const ground = buildGround(win, origin, datum)
-    group.add(ground)
-    if (roads) group.add(buildRoads(win, origin, datum))
-    const { node: buildings, solids } = buildBuildings(win, origin, datum)
-    group.add(buildings)
-    if (borders) group.add(buildBorders(win, origin, datum))
-    shown = { win, origin, datum, solids, ground }
+  // buildings): the ground alone, under the finer window near the viewer. Near the viewer it can
+  // also show the outlines of managed districts and the terraces of the town's own lots.
+  async function show(win, { origin = [0, 0], datum = 0, borders = true, roads = true, coarse = false, outlines = [], walls = [], paving = [] } = {}) {
+    const ticket = ++revision
+    const pending = new THREE.Group()
+    function* assemble() {
+      const ground = yield* buildGround(win, origin, datum, coarse)
+      pending.add(ground)
+      yield
+      if (roads) pending.add(coarse ? yield* buildOverviewRoads(win, origin, datum) : yield* buildRoads(win, origin, datum))
+      const { node, solids } = yield* buildBuildings(win, origin, datum)
+      if (win.buildings.length) pending.add(node)
+      if (borders) pending.add(yield* buildBorders(win, origin, datum))
+      if (outlines.length) pending.add(yield* buildOutlines(win, origin, datum, outlines))
+      if (walls.length || paving.length) pending.add(yield* buildPads(win, origin, datum, walls, paving))
+      return { win, origin, datum, solids, ground }
+    }
+    const steps = assemble()
+    try {
+      // Paint the current frame before starting a new window, then share the main thread with input and rendering.
+      await yieldToPage()
+      let deadline = performance.now() + frameBudget
+      while (ticket === revision) {
+        const step = steps.next()
+        if (step.done) {
+          reset()
+          group.add(...pending.children.slice())
+          shown = step.value
+          return true
+        }
+        if (performance.now() >= deadline) {
+          await yieldToPage()
+          deadline = performance.now() + frameBudget
+        }
+      }
+      return false
+    } finally {
+      steps.return()
+      disposeGroup(pending)
+    }
   }
 
   // Leaves out the ground under `hole` (region metres; null for none).
@@ -291,6 +425,11 @@ export function createRegionScene() {
   }
 
   function clear() {
+    revision++
+    reset()
+  }
+
+  function reset() {
     for (const child of [...group.children]) {
       group.remove(child)
       disposeGroup(child)

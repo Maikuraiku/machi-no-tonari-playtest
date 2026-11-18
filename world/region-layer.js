@@ -12,10 +12,14 @@
 //   pushOut(x, z, pushOut) and reach().
 // In a region town scene metres are region metres (the town's tiles start at its corner).
 import * as THREE from 'three'
-import { STEP, decodeLine, packSpec } from '../region/game-pack.js?v=online-1794980046418'
-import { regionClient } from './region-client.js?v=online-1794980046418'
-import { createRegionScene } from './region-scene.js?v=online-1794980046418'
-import { createRouteTransit } from './route-transit.js?v=online-1794980046418'
+import { STEP, decodeLine, packSpec } from '../region/game-pack.js'
+import { regionClient } from './region-client.js'
+import { createRegionScene } from './region-scene.js'
+import { createRouteTransit } from './route-transit.js'
+import { REGION_OVERVIEW_STEP, regionOverview } from './region-overview.js'
+import { buildingFilter, claimsKey, levelOf as lotLevel, lotRects, outlinesIn, padGround, padsOf } from './region-pads.js'
+import { claimIndex, lotRights } from '../region/district-lookup.js'
+import { rayOnto, standOn, stopsAt } from './station-solids.js'
 
 const SIZE = 20000
 // The detailed square round the player (half its side and its grid), by quality; it is cut again
@@ -59,10 +63,13 @@ const clampBox = (cx, cz, half) => ({
 export function withRegion(environment, world) {
   const near = createRegionScene()
   const far = createRegionScene()
+  const whole = createRegionScene()
   const transit = createRouteTransit({ clock: () => regionClient.now() / 1000 })
   const group = new THREE.Group()
   group.name = 'region-town'
-  group.add(far.group, near.group, transit.group)
+  const routes = new THREE.Group()
+  routes.name = 'region-overview-routes'
+  group.add(whole.group, far.group, near.group, transit.group, routes)
   group.visible = false
   world.add(group)
 
@@ -72,14 +79,24 @@ export function withRegion(environment, world) {
   let farBox = null
   let loadingNear = false
   let loadingFar = false
+  let loadingWhole = false
+  let wholeShown = false
+  let overview = false
+  let previousBackground = null
+  let previousFog = null
   // Where the ground is not yet known: the plaza's height, where newcomers arrive.
   let fallback = 0
   let walls = new Map()
   let lineKey = ''
+  // The town's own lots as the scene last drew them (the shop, the cafe, the houses), the near
+  // window as the worker cut it, and what of the town it was last shown with.
+  let lots = []
+  let nearRaw = null
+  let nearShownKey = ''
   // The lines' centres in pieces of 20 m, sorted into a grid, each with the room it keeps clear.
   let lineGrid = new Map()
   // How long the last windows took to make, for tuning.
-  const stats = { near: 0, nearBuildings: 0, hidden: 0, far: 0 }
+  const stats = { near: 0, nearBuildings: 0, hidden: 0, far: 0, whole: 0, wholeVertices: 0 }
   // (Readable from the page's console through the client, which the page shares.)
   regionClient.stats = stats
   // Changes on entering or leaving a region town, so that late replies are dropped.
@@ -88,18 +105,38 @@ export function withRegion(environment, world) {
   const probe = new THREE.Vector3()
 
   const report = (error) => console.warn('region:', error?.message ?? error)
+  // While the region of a region town is being made, the placeholder island of the start screen
+  // is put away at once, so that it is not left standing under the region when it comes in.
+  let waiting = false
+  regionClient.on((kind) => {
+    if (map) return
+    if (kind === 'open' && !waiting) {
+      waiting = true
+      environment.setOutdoors(false)
+    } else if (kind === 'close' && waiting) {
+      waiting = false
+      environment.setOutdoors(true)
+    }
+  })
   const ready = () => regionClient.status.phase === 'ready' && regionClient.status.seed === map?.region.seed
 
   function enter(next) {
     leave()
+    waiting = false
     map = next
     generation++
     environment.setOutdoors(false)
     group.visible = true
+    previousBackground = world.background
+    previousFog = world.fog ? { near: world.fog.near, far: world.fog.far } : null
     regionClient.open(next.region.seed)
   }
 
   function leave() {
+    if (waiting && !map) {
+      waiting = false
+      environment.setOutdoors(true)
+    }
     if (!map) return
     map = null
     generation++
@@ -107,17 +144,26 @@ export function withRegion(environment, world) {
     group.visible = false
     near.clear()
     far.clear()
+    whole.clear()
+    clearRoutes()
     transit.dispose()
     nearBox = null
     farBox = null
     loadingNear = false
     loadingFar = false
+    loadingWhole = false
+    wholeShown = false
+    setOverview(false)
     walls = new Map()
     lineKey = ''
     lineGrid = new Map()
+    nearRaw = null
+    nearShownKey = ''
+    stationGrid = { revision: -1, cells: new Map(), surfaces: [] }
   }
 
-  function drawTown(next, taken, clearOf) {
+  function drawTown(next, taken, clearOf, nextLots = []) {
+    lots = Array.isArray(nextLots) ? nextLots : []
     if (!next?.region) {
       leave()
       environment.drawTown(next, taken, clearOf)
@@ -134,9 +180,10 @@ export function withRegion(environment, world) {
     const key = packs.map((pack) => `${pack.id}|${pack.name}|${pack.points?.length}|${pack.heights?.length}|${pack.stations?.length}`).join(',')
     if (key === lineKey) return
     lineKey = key
+    showRoutes(packs)
     landOf(packs)
-    // The buildings round the player are cleared off the lines' land at the next window.
-    nearBox = null
+    // (The buildings round the player are cleared off the lines' land when the near window is
+    // shown again, which the changed key below brings about.)
     if (!packs.length) {
       transit.setLines([])
       return
@@ -163,6 +210,61 @@ export function withRegion(environment, world) {
         stop()
         lay().catch(report)
       }
+    })
+  }
+
+  function clearRoutes() {
+    for (const child of [...routes.children]) {
+      routes.remove(child)
+      child.geometry.dispose()
+      child.material.dispose()
+    }
+  }
+
+  function showRoutes(packs) {
+    clearRoutes()
+    const positions = []
+    const colours = []
+    const colour = new THREE.Color()
+    for (const pack of packs) {
+      let line
+      try {
+        line = decodeLine(pack)
+      } catch {
+        continue
+      }
+      colour.set(line.color || '#b13d39')
+      for (let k = 1; k < line.heights.length; k++) {
+        for (const at of [k - 1, k]) {
+          positions.push(line.points[at * 2], line.heights[at] + 5, line.points[at * 2 + 1])
+          colours.push(colour.r, colour.g, colour.b)
+        }
+      }
+    }
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colours, 3))
+    const route = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({ vertexColors: true }))
+    routes.add(route)
+    routes.visible = overview
+  }
+
+  function ensureWhole() {
+    if (wholeShown || loadingWhole) return
+    loadingWhole = true
+    const ticket = generation
+    regionClient.call('window', { x0: 0, z0: 0, x1: SIZE, z1: SIZE, step: REGION_OVERVIEW_STEP, buildings: false, streets: false }).then(async ({ window: win }) => {
+      if (ticket !== generation) return
+      const started = performance.now()
+      const shown = await whole.show(win, { datum: FAR.sink * 2, coarse: true, borders: false })
+      if (shown === false || ticket !== generation) return
+      whole.setHole(farBox)
+      wholeShown = true
+      stats.whole = Math.round(performance.now() - started)
+      stats.wholeVertices = win.width * win.depth
+      whole.group.visible = overview
+    }).catch(report).finally(() => {
+      if (ticket === generation) loadingWhole = false
     })
   }
 
@@ -219,41 +321,85 @@ export function withRegion(environment, world) {
     const cx = Math.round(x / FAR.step) * FAR.step
     const cz = Math.round(z / FAR.step) * FAR.step
     const box = clampBox(cx, cz, FAR.half)
-    regionClient.call('window', { ...box, step: FAR.step, buildings: false, streets: false }).then(({ window: win }) => {
+    regionClient.call('window', { ...box, step: FAR.step, buildings: false, streets: false }).then(async ({ window: win }) => {
       if (ticket !== generation) return
       const started = performance.now()
-      far.show(win, { datum: FAR.sink, roads: false, borders: false })
+      const shown = await far.show(win, { datum: FAR.sink, roads: false, borders: false })
+      if (shown === false || ticket !== generation) return
       stats.far = Math.round(performance.now() - started)
       far.setHole(nearBox)
-      farBox = { cx, cz }
+      farBox = { ...box, cx, cz }
+      whole.setHole(farBox)
     }).catch(report).finally(() => {
       if (ticket === generation) loadingFar = false
     })
   }
 
+  // What of the town the near window shows: the districts and how they are managed, the town's
+  // own lots and their heights, the monorail and whether the town keeps the region's buildings.
+  const townKey = () => `${claimsKey(map?.districts)}|${JSON.stringify(padsOf(map, lots))}|${lineKey}|${map?.region.buildings}`
+
   // The detailed ground round the player, with its roads, streets and buildings.
   function ensureNear(x, z) {
     const { half, step } = NEAR[quality] ?? NEAR.medium
-    if (loadingNear || (nearBox && nearBox.quality === quality && Math.abs(x - nearBox.cx) < half * 0.45 && Math.abs(z - nearBox.cz) < half * 0.45)) return
+    if (loadingNear) return
+    const moved = !nearBox || nearBox.quality !== quality || Math.abs(x - nearBox.cx) >= half * 0.45 || Math.abs(z - nearBox.cz) >= half * 0.45
+    if (!moved) {
+      // The town changed under the same ground (a district managed, a house built): shown again
+      // from the window already here, without asking the worker.
+      if (nearRaw && townKey() !== nearShownKey) {
+        loadingNear = true
+        const ticket = generation
+        showNear(nearRaw, nearBox).catch(report).finally(() => {
+          if (ticket === generation) loadingNear = false
+        })
+      }
+      return
+    }
     loadingNear = true
     const ticket = generation
     const cx = Math.round(x / 16) * 16
     const cz = Math.round(z / 16) * 16
     const box = clampBox(cx, cz, half)
-    regionClient.call('window', { ...box, step, buildings: map.region.buildings !== false }).then(({ window: win }) => {
+    // (Always with the region's buildings: which of them stand is decided here, by district.)
+    regionClient.call('window', { ...box, step, buildings: true }).then(async ({ window: win }) => {
       if (ticket !== generation) return
-      const started = performance.now()
-      const standing = win.buildings.length
-      if (lineGrid.size) win.buildings = win.buildings.filter(offTheLine)
-      near.show(win, { borders: true })
-      Object.assign(stats, { near: Math.round(performance.now() - started), nearBuildings: win.buildings.length, hidden: standing - win.buildings.length })
-      nearBox = { ...box, cx, cz, quality }
-      far.setHole(nearBox)
-      wallsOf(near.solids)
-      regionClient.markShown()
+      nearRaw = win
+      await showNear(win, { ...box, cx, cz, quality })
     }).catch(report).finally(() => {
       if (ticket === generation) loadingNear = false
     })
+  }
+
+  // Shows the near window with the town on it: the generated buildings kept off districts managed
+  // without them, off the town's lots and off the monorail's land; the lots levelled into terraces
+  // with retaining walls; the plaza paved; the managed districts outlined in the viewer's colours.
+  async function showNear(raw, box) {
+    const ticket = generation
+    const key = townKey()
+    const started = performance.now()
+    const keep = buildingFilter({
+      claims: claimIndex(map.districts ?? []),
+      built: map.region.buildings !== false,
+      rects: lotRects(map, lots),
+      offLine: lineGrid.size ? offTheLine : null,
+    })
+    const buildings = raw.buildings.filter(keep)
+    const ground = padGround(raw, padsOf(map, lots))
+    const plaza = ground.pads.find((pad) => pad.kind === 'plaza')
+    const shown = await near.show({ ...raw, heights: ground.heights, buildings }, {
+      borders: true,
+      outlines: outlinesIn(map.districts ?? [], raw.box, 4),
+      walls: ground.walls,
+      paving: plaza?.pave ? [{ ...plaza.pave, y: plaza.y }] : [],
+    })
+    if (shown === false || ticket !== generation) return
+    Object.assign(stats, { near: Math.round(performance.now() - started), nearBuildings: buildings.length, hidden: raw.buildings.length - buildings.length })
+    nearBox = box
+    nearShownKey = key
+    far.setHole(nearBox)
+    wallsOf(near.solids)
+    regionClient.markShown()
   }
 
   // The outside walls of the buildings, sorted into a grid.
@@ -275,29 +421,79 @@ export function withRegion(environment, world) {
     }
   }
 
-  function heightAt(x, z) {
+  // The stations' surfaces, walls and boxes near the viewer, sorted into the walls' grid; made
+  // again whenever the transit builds its stations again.
+  let stationGrid = { revision: -1, cells: new Map(), surfaces: [] }
+  function stationSolids() {
+    if (stationGrid.revision === transit.revision) return stationGrid
+    const cells = new Map()
+    const { surfaces, walls: stationWalls, boxes } = transit.solids
+    const file = (kind, item) => {
+      const { x0, z0, x1, z1 } = item.box
+      for (let j = Math.floor(z0 / CELL); j <= Math.floor(z1 / CELL); j++) {
+        for (let i = Math.floor(x0 / CELL); i <= Math.floor(x1 / CELL); i++) {
+          const key = `${i},${j}`
+          if (!cells.has(key)) cells.set(key, { surfaces: [], walls: [], boxes: [] })
+          cells.get(key)[kind].push(item)
+        }
+      }
+    }
+    for (const item of surfaces) file('surfaces', item)
+    for (const item of stationWalls) file('walls', item)
+    for (const item of boxes) file('boxes', item)
+    stationGrid = { revision: transit.revision, cells, surfaces }
+    return stationGrid
+  }
+
+  // The height under (x, z): the ground (levelled under the town's lots), or, for a walker whose
+  // feet are at `y`, a station's platform, landing or stair they can step onto.
+  function heightAt(x, z, y) {
+    const ground = terrainAt(x, z)
+    if (!map || !Number.isFinite(y)) return ground
+    const cell = stationSolids().cells.get(`${Math.floor(x / CELL)},${Math.floor(z / CELL)}`)
+    if (!cell) return ground
+    const on = standOn(cell.surfaces, x, z, y)
+    return on !== null && on > ground ? on : ground
+  }
+
+  function terrainAt(x, z) {
     if (!map) return 0
     const fine = near.heightAt(x, z)
     if (fine !== null) return fine
     const coarse = far.heightAt(x, z)
     if (coarse !== null) return coarse + FAR.sink
+    const complete = whole.heightAt(x, z)
+    if (complete !== null) return complete + FAR.sink * 2
     return fallback
   }
 
-  function update(delta, focus, immersive) {
+  function setOverview(next) {
+    overview = next
+    routes.visible = next
+    whole.group.visible = next
+    if (world.fog && previousFog) {
+      world.fog.near = next ? SIZE * 2.5 : previousFog.near
+      world.fog.far = next ? SIZE * 6 : previousFog.far
+    }
+    world.background = next && world.fog ? world.fog.color : previousBackground
+  }
+
+  function update(delta, focus, immersive, view) {
     environment.update(delta, focus, immersive)
     if (!map) return
-    focusAt.copy(focus)
+    setOverview(Boolean(view?.overview) && !immersive)
+    focusAt.copy(view?.player ?? focus)
     // The shadow box follows the ground up and down.
     const { sun, sunDirection } = environment
     sun.target.position.y = focus.y
     sun.position.copy(sun.target.position).addScaledVector(sunDirection, 200)
     if (ready()) {
-      ensureFar(focus.x, focus.z)
-      ensureNear(focus.x, focus.z)
+      ensureWhole()
+      ensureFar(focusAt.x, focusAt.z)
+      ensureNear(focusAt.x, focusAt.z)
     }
-    transit.setNear([focus.x, focus.z], TRACK_REACH)
-    transit.update([focus.x, focus.z], 1600)
+    transit.setNear([focusAt.x, focusAt.z], TRACK_REACH)
+    transit.update([focusAt.x, focusAt.z], 1600)
   }
 
   return {
@@ -312,13 +508,38 @@ export function withRegion(environment, world) {
       return Boolean(map)
     },
     regionStats: stats,
+    // The height a scene lot stands at: its own ground in a region town, 0 in an ordinary one.
+    levelOf: (lot) => (map ? lotLevel(lot, map.region) : 0),
+    // Colours the marker of a lot about to be built on: yellow where the viewer may build (every
+    // tile in a district they manage or help build), red elsewhere; as it was in ordinary towns.
+    tint(marker, ground, size) {
+      const paint = marker?.material
+      if (!paint?.color) return
+      paint.userData.baseColor ??= paint.color.getHex()
+      if (!map || !ground?.tile) {
+        paint.color.setHex(paint.userData.baseColor)
+        return
+      }
+      const rights = lotRights(claimIndex(map.districts ?? []), ground.tile.x, ground.tile.z, size?.w ?? 1, size?.d ?? 1)
+      paint.color.set(rights.ok ? '#ffe98a' : '#ff7a6a')
+    },
+    overview: (aspect, fov) => map ? regionOverview(SIZE, aspect, fov) : null,
     heightAt,
     // Where a ray from the camera meets the ground: `point`, false when it meets none within
     // 1.5 km, or null outside a region town (the flat ground of a town is used then).
     pick(ray, point) {
       if (!map) return null
+      // A station's platform, landing or stair in the way comes first.
+      const o = [ray.origin.x, ray.origin.y, ray.origin.z]
+      const d = [ray.direction.x, ray.direction.y, ray.direction.z]
+      let station = Infinity
+      for (const surface of stationSolids().surfaces) {
+        const t = rayOnto(surface, o, d)
+        if (t !== null && t < station) station = t
+      }
       let previous = 0
-      for (let t = 0.5; t < 1500; t += t < 200 ? 2 : 8) {
+      const range = Math.min(station, overview ? SIZE * 6 : 1500)
+      for (let t = 0.5; t < range; t += t < 200 ? 2 : overview ? 80 : 8) {
         probe.copy(ray.direction).multiplyScalar(t).add(ray.origin)
         if (probe.y <= heightAt(probe.x, probe.z)) {
           let low = previous
@@ -333,6 +554,7 @@ export function withRegion(environment, world) {
         }
         previous = t
       }
+      if (station < Infinity) return point.copy(ray.direction).multiplyScalar(station).add(ray.origin)
       return false
     },
     // Keeps the camera out of the hillside.
@@ -342,7 +564,7 @@ export function withRegion(environment, world) {
       if (position.y < ground) position.y = ground
     },
     // Keeps a walker out of the buildings and off the monorail's piers (`pushOut` is the scene's).
-    pushOut(x, z, pushOut) {
+    pushOut(x, z, pushOut, y) {
       if (!map) return [x, z]
       const segments = []
       const seen = new Set()
@@ -358,10 +580,31 @@ export function withRegion(environment, world) {
         }
       }
       const boxes = transit.piers.filter((box) => Math.abs(box.x - x) < 8 && Math.abs(box.z - z) < 8)
+      // The stations' walls and columns, those at the walker's height only.
+      if (Number.isFinite(y)) {
+        const { cells } = stationSolids()
+        const met = new Set()
+        for (let j = cz - 1; j <= cz + 1; j++) {
+          for (let i = cx - 1; i <= cx + 1; i++) {
+            const cell = cells.get(`${i},${j}`)
+            if (!cell) continue
+            for (const wall of cell.walls) {
+              if (met.has(wall) || !stopsAt(wall, y)) continue
+              met.add(wall)
+              segments.push(wall)
+            }
+            for (const box of cell.boxes) {
+              if (met.has(box) || !stopsAt(box, y)) continue
+              met.add(box)
+              boxes.push(box)
+            }
+          }
+        }
+      }
       return segments.length || boxes.length ? pushOut({ segments, boxes }, x, z) : [x, z]
     },
     // How far out the camera may be drawn: a region is seen from much higher up.
-    reach: () => (map ? 1100 : 260),
+    reach: () => (map ? regionOverview(SIZE, 0.35).distance : 260),
     dispose() {
       leave()
       transit.dispose()

@@ -4,9 +4,9 @@
 // The address takes #seed=3&x=…&z=…&size=1000&bare=1 (bare: without buildings).
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
-import { createRegionScene } from '../world/region-scene.js?v=online-1794980046418'
-import { routeSpec } from '../world/route-line.js?v=online-1794980046418'
-import { createRouteTransit } from '../world/route-transit.js?v=online-1794980046418'
+import { createRegionScene } from '../world/region-scene.js'
+import { routeSpec } from '../world/route-line.js'
+import { createRouteTransit } from '../world/route-transit.js'
 
 // The same seed region.js makes from what was typed (numbers stay numbers, text is hashed),
 // kept here so the page itself loads none of the generator.
@@ -68,7 +68,7 @@ renderer.setAnimationLoop(() => {
   renderer.render(scene, camera)
 })
 
-const worker = new Worker(new URL('./worker.js?v=online-1794980046418', import.meta.url), { type: 'module' })
+const worker = new Worker(new URL('./worker.js?v=2', import.meta.url), { type: 'module' })
 let overlay = null
 let centre = null
 worker.onmessage = (event) => {
@@ -80,18 +80,26 @@ worker.onmessage = (event) => {
     centre = [Number(params.get('x')) || station?.x || 10000, Number(params.get('z')) || station?.z || 10000]
     info.textContent = '3Dの形を作っています…'
     worker.postMessage({ type: 'window', id: 1, seed, x0: centre[0] - size / 2, z0: centre[1] - size / 2, x1: centre[0] + size / 2, z1: centre[1] + size / 2, step: size > 1100 ? 4 : 2, buildings: params.get('bare') !== '1' })
-  } else if (message.type === 'window') show(message.window)
+  } else if (message.type === 'window') {
+    show(message.window).catch((error) => { info.textContent = `3Dの形を作れませんでした。${error.message}` })
+  }
   else if (message.type === 'error') info.textContent = `失敗しました：${message.message}`
 }
 worker.postMessage({ type: 'generate', seed })
 
-function show(win) {
+async function show(win) {
   let lowest = Infinity
   for (const h of win.heights) lowest = Math.min(lowest, h)
   const datum = Math.floor(lowest)
   const origin = centre
   const started = performance.now()
-  region.show(win, { origin, datum })
+  if (!(await region.show(win, { origin, datum }))) return
+  const middle = region.heightAt(0, 0) ?? 0
+  controls.target.set(0, middle, 0)
+  camera.position.set(-size * 0.38, middle + size * 0.28, size * 0.42)
+  info.textContent = 'モノレールを配置しています…'
+  // Let the completed ground and buildings render before laying the route map.
+  await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)))
   // The monorail along the route map: every line that crosses this square, built near it.
   const specs = []
   for (const line of overlay.lines) {
@@ -101,8 +109,5 @@ function show(win) {
   }
   transit.setLines(specs, { near: [0, 0], reach: size * 0.75 })
   const laid = specs.length
-  const middle = region.heightAt(0, 0) ?? 0
-  controls.target.set(0, middle, 0)
-  camera.position.set(-size * 0.38, middle + size * 0.28, size * 0.42)
   info.innerHTML = `シード ${seed}・${size}m四方（東へ ${(centre[0] / 1000).toFixed(2)}km・南へ ${(centre[1] / 1000).toFixed(2)}km）<br>建物 ${win.buildings.length}棟・生活道路 ${win.streets.length}本・地区 ${win.districts.length}・モノレール ${laid}路線<br>3Dの組み立て ${Math.round(performance.now() - started)}ミリ秒。ドラッグで回転、ホイールで拡大。`
 }

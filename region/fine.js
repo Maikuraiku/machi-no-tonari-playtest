@@ -2,10 +2,10 @@
 // the forms smaller than a grid cell: the great river's channel, banks and levees drawn exactly
 // from the river's own geometry, streams in their beds, graded hillsides stepped into level lots,
 // paddies levelled plot by plot, and the small unevenness of woods and open land.
-import { BUILT_USES, USE } from './develop.js?v=online-1794980046418'
-import { chaikin, segmentIndex } from './geometry.js?v=online-1794980046418'
-import { fbm } from './noise.js?v=online-1794980046418'
-import { bicubic, bilinear, riverAlong } from './terrain.js?v=online-1794980046418'
+import { BUILT_USES, USE } from './develop.js'
+import { chaikin, segmentIndex } from './geometry.js'
+import { fbm } from './noise.js'
+import { bicubic, bilinear, riverAlong } from './terrain.js'
 
 export const WATER = { NONE: 0, RIVER: 1, STREAM: 2 }
 
@@ -117,14 +117,34 @@ export function createFineTerrain(region) {
   function heights(x0, z0, step, w, h) {
     const height = new Float32Array(w * h)
     const water = new Uint8Array(w * h)
-    const streams = []
-    region.streams.index.inBox(x0 - 20, z0 - 20, x0 + w * step + 20, z0 + h * step + 20, (segment) => streams.push(segment))
+    // The streams of the box, sorted into buckets of 64 m (each with the segments that come within
+    // reach of it), so that a large box costs no more per pixel than a small one.
+    const BUCKET = 64
+    const REACH = 12
+    const buckets = new Map()
+    let any = false
+    region.streams.index.inBox(x0 - 20, z0 - 20, x0 + w * step + 20, z0 + h * step + 20, (segment) => {
+      any = true
+      const i0 = Math.floor((Math.min(segment.ax, segment.bx) - REACH) / BUCKET)
+      const i1 = Math.floor((Math.max(segment.ax, segment.bx) + REACH) / BUCKET)
+      const j0 = Math.floor((Math.min(segment.az, segment.bz) - REACH) / BUCKET)
+      const j1 = Math.floor((Math.max(segment.az, segment.bz) + REACH) / BUCKET)
+      for (let bj = j0; bj <= j1; bj++) {
+        for (let bi = i0; bi <= i1; bi++) {
+          const key = bi + bj * 100000
+          const list = buckets.get(key)
+          if (list) list.push(segment)
+          else buckets.set(key, [segment])
+        }
+      }
+    })
     for (let j = 0; j < h; j++) {
       const z = z0 + (j + 0.5) * step
       for (let i = 0; i < w; i++) {
         const x = x0 + (i + 0.5) * step
         // Only streams within reach are worth measuring against.
-        const near = streams.length ? nearStreams(streams, x, z) : null
+        const bucket = any ? buckets.get(Math.floor(x / BUCKET) + Math.floor(z / BUCKET) * 100000) : null
+        const near = bucket ? nearStreams(bucket, x, z) : null
         height[i + j * w] = sample(x, z, near, scratch)
         water[i + j * w] = scratch.water
       }

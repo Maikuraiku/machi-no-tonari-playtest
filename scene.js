@@ -3,18 +3,18 @@
 // VR cameras. Buildings are real: their walls stop a walker, their doors open, and stairs
 // lead to the storeys above.
 import * as THREE from 'three'
-import { createAvatars } from './world/avatars.js?v=online-1794980046418'
-import { SHOP_HOUSES, createBuilding } from './world/buildings.js?v=online-1794980046418'
-import { BODY as RADIUS, colliders, floorHeight, frontDoors, storeyShape, yardHeight } from './world/design.js?v=online-1794980046418'
-import { createEnvironment } from './world/environment.js?v=online-1794980046418'
-import { withRegion } from './world/region-layer.js?v=online-1794980046418'
-import { FIRST_PERSON_LAYER, THIRD_PERSON_LAYER } from './world/first-person.js?v=online-1794980046418'
-import { updateGlass } from './world/glass.js?v=online-1794980046418'
-import { TILE, disposeGroup, setAnisotropy, setDetail, textTexture } from './world/kit.js?v=online-1794980046418'
-import { createLiftControl } from './world/lift-control.js?v=online-1794980046418'
-import { createTransit, planTrial } from './world/monorail.js?v=online-1794980046418'
-import { createSound } from './world/sound.js?v=online-1794980046418'
-import { createVRMenu } from './world/vr-menu.js?v=online-1794980046418'
+import { createAvatars } from './world/avatars.js?v=8'
+import { SHOP_HOUSES, createBuilding } from './world/buildings.js'
+import { BODY as RADIUS, colliders, floorHeight, frontDoors, storeyShape, yardHeight } from './world/design.js'
+import { createEnvironment } from './world/environment.js?v=6'
+import { withRegion } from './world/region-layer.js?v=3'
+import { FIRST_PERSON_LAYER, THIRD_PERSON_LAYER } from './world/first-person.js?v=1'
+import { updateGlass } from './world/glass.js'
+import { TILE, disposeGroup, setAnisotropy, setDetail, textTexture } from './world/kit.js'
+import { createLiftControl } from './world/lift-control.js'
+import { createTransit, planTrial } from './world/monorail.js'
+import { createSound } from './world/sound.js'
+import { createVRMenu } from './world/vr-menu.js?v=1'
 
 const SPEED = 4.6
 const MODES = ['follow', 'first', 'overview', 'close']
@@ -529,7 +529,7 @@ export function initScene(container, callbacks = {}) {
         if (yard > 0 || !environment.region) return entry.y0 + yard
       }
     }
-    return environment.heightAt(here.x, here.z)
+    return environment.heightAt(here.x, here.z, here.y)
   }
 
   // ---- Lifts ----------------------------------------------------------------
@@ -795,6 +795,8 @@ export function initScene(container, callbacks = {}) {
       snapCamera = true
     }
     placeLocal()
+    if (mode === 'overview' && !home && !designing() && state.town?.region
+      && previous.town?.region?.seed !== state.town.region.seed) fitRegionOverview()
     syncActors()
     drawMarkers()
   }
@@ -900,7 +902,7 @@ export function initScene(container, callbacks = {}) {
     }
     // Nobody walks through the piers of the monorail.
     if (local.level === 0 && transit.piers.length) [px, pz] = pushOut({ segments: [], boxes: transit.piers }, px, pz)
-    if (local.level === 0 && environment.region) [px, pz] = environment.pushOut(px, pz, pushOut)
+    if (local.level === 0 && environment.region) [px, pz] = environment.pushOut(px, pz, pushOut, here.y)
     for (const entry of entries.values()) {
       // Upstairs, only the building one stands in matters.
       if (local.level > 0 && entry !== home) continue
@@ -1143,6 +1145,11 @@ export function initScene(container, callbacks = {}) {
 
   function placeCamera(delta) {
     if (immersive()) {
+      if (camera.near !== 0.1 || camera.far !== 5200) {
+        camera.near = 0.1
+        camera.far = 5200
+        camera.updateProjectionMatrix()
+      }
       // The headset has already moved the body through the town, so don't apply its offset a second time.
       rig.position.copy(here).sub(xrOrigin)
       rig.rotation.y = xrYaw
@@ -1169,6 +1176,14 @@ export function initScene(container, callbacks = {}) {
     else focus.lerp(target, 1 - Math.exp(-12 * delta))
     snapCamera = false
     let reach = draft ? THREE.MathUtils.clamp(distance, 6, 60) : mode === 'close' ? 3.4 : indoors ? THREE.MathUtils.clamp(distance, 3, 14) : distance
+    const wholeRegion = mapView && environment.region && reach > 1800
+    const near = wholeRegion ? Math.max(0.1, reach / 4000) : 0.1
+    const far = wholeRegion ? Math.max(5200, reach + 40000) : 5200
+    if (camera.near !== near || camera.far !== far) {
+      camera.near = near
+      camera.far = far
+      camera.updateProjectionMatrix()
+    }
     const tilt = mode === 'close' && !draft ? 0.12 : indoors ? THREE.MathUtils.clamp(pitch, 0.62, 1.45) : pitch
     const turn = mode === 'close' && !draft ? 0 : yaw
     if (mode === 'follow' && !draft) {
@@ -1190,13 +1205,25 @@ export function initScene(container, callbacks = {}) {
     camera.lookAt(focus)
   }
 
+  function fitRegionOverview() {
+    const whole = environment.overview(camera.aspect, 55)
+    if (!whole) return false
+    pan.set(whole.x, environment.heightAt(whole.x, whole.z), whole.z)
+    distance = whole.distance
+    pitch = whole.pitch
+    snapCamera = true
+    return true
+  }
+
   function setCamera(next) {
     const chosen = MODES.includes(next) ? next : 'follow'
     if (chosen === mode) return
     if (chosen === 'overview') {
-      pan.set(here.x, environment.heightAt(here.x, here.z), here.z)
-      distance = Math.max(distance, 70)
-      pitch = Math.max(pitch, 0.95)
+      if (home || designing() || !fitRegionOverview()) {
+        pan.set(here.x, environment.heightAt(here.x, here.z), here.z)
+        distance = Math.max(distance, 70)
+        pitch = Math.max(pitch, 0.95)
+      }
     } else if (mode === 'overview') {
       distance = 13
       pitch = 0.5
@@ -1979,7 +2006,7 @@ export function initScene(container, callbacks = {}) {
       frameView()
     }
     placeSketch()
-    environment.update(delta, focus, immersive())
+    environment.update(delta, focus, immersive(), { player: here, overview: mode === 'overview' && !home && !designing() && distance > 1800 })
     camera.updateMatrixWorld(true)
     const view = xrPose ? point.set(xrPose.head[0], xrPose.head[1], xrPose.head[2]).add(here)
       : immersive() ? camera.getWorldPosition(point) : camera.position

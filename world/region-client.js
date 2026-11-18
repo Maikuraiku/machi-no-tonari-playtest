@@ -75,13 +75,13 @@ function onMessage(event) {
 function start() {
   worker?.terminate()
   heard = false
-  worker = new Worker(new URL('../region/worker.js?v=online-1794980046418', import.meta.url), { type: 'module' })
+  worker = new Worker(new URL('../region/worker.js?v=3', import.meta.url), { type: 'module' })
   worker.onmessage = onMessage
   worker.onerror = (event) => {
     event.preventDefault?.()
     fail(`地域の計算を始められませんでした。${event.message ?? ''}`)
   }
-  worker.postMessage({ type: 'generate', seed: status.seed })
+  worker.postMessage({ type: 'generate', seed: status.seed, preloadBuildings: true })
   // A worker whose modules never arrived says nothing at all: start it again, twice at most.
   clearTimeout(watchdog)
   watchdog = setTimeout(() => {

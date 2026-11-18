@@ -1,10 +1,11 @@
-import { initScene } from "./scene.js?v=online-1794980046418";
-import { connectPresence } from "./presence.js?v=online-1794980046418";
-import { createVoice } from "./voice.js?v=online-1794980046418";
-import { createStudio } from "./studio.js?v=online-1794980046418";
-import { FINISHES, ITEMS, ITEM_GROUPS, OPENINGS, ROOM_COLORS, ROOM_LABELS, STYLE_FLOORS, STYLE_LABELS, WALL_DECOR } from "./world/design.js?v=online-1794980046418";
-import { TOOLS, WALL_KINDS } from "./world/editor.js?v=online-1794980046418";
-import { createRegionApp } from "./region-app.js?v=online-1794980046418";
+import { initScene } from "./scene.js?v=10";
+import { connectPresence } from "./presence.js?v=7";
+import { createVoice } from "./voice.js";
+import { createStudio } from "./studio.js?v=8";
+import { FINISHES, ITEMS, ITEM_GROUPS, OPENINGS, ROOM_COLORS, ROOM_LABELS, STYLE_FLOORS, STYLE_LABELS, WALL_DECOR } from "./world/design.js";
+import { TOOLS, WALL_KINDS } from "./world/editor.js";
+import { createRegionApp } from "./region-app.js?v=2";
+import { connectionMessage, TOWN_TIMEOUT, withDeadline } from "./town-connection.js";
 
 const $ = (id) => document.getElementById(id);
 const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({
@@ -56,7 +57,7 @@ let refreshTimer;
 let voiceTimer;
 let sessionGeneration = 0;
 let lastSignal = 0;
-let joining = false;
+let joinAttempt = null;
 // The view the resident chose; editing the town and trying on clothes borrow the camera for a while.
 let viewMode = "follow";
 let vrReady = false;
@@ -188,30 +189,39 @@ const apiBase = new URL(document.querySelector('meta[name="machi-api-origin"]')?
 const realtimeBase = new URL(document.querySelector('meta[name="machi-realtime-origin"]')?.content || apiBase.href);
 let stateBase = apiBase;
 
-async function readStateResponse(url, options) {
-  const alternate = stateBase === apiBase ? realtimeBase : apiBase;
-  const target = (base) => {
+async function readState(url, options) {
+  const first = stateBase;
+  const alternate = first === apiBase ? realtimeBase : apiBase;
+  const read = async (base, signal) => {
     const next = new URL("./api/state", base);
     next.search = url.search;
-    return next;
+    return readReply(await fetch(next, { ...options, signal }));
   };
-  const timeout = AbortSignal.timeout(1800);
-  const signal = options.signal && AbortSignal.any ? AbortSignal.any([options.signal, timeout]) : options.signal ?? timeout;
   try {
-    const response = await fetch(target(stateBase), { ...options, signal });
-    if (response.status < 500) return response;
-    response.body?.cancel().catch(() => {});
+    return await withDeadline((signal) => read(first, signal), 1800, options.signal);
   } catch (error) {
-    if (options.signal?.aborted) throw error;
+    if (options.signal?.aborted || (error.status && error.status < 500)) throw error;
   }
-  const response = await fetch(target(alternate), options);
-  if (response.status < 500) stateBase = alternate;
-  return response;
+  const result = await read(alternate, options.signal);
+  stateBase = alternate;
+  return result;
 }
 
 function responseError(status, data) {
   const message = status === 413 ? "サーバーが送信データを受け付けられませんでした。" : "街との通信に失敗しました。";
   return Object.assign(new Error(data?.error ?? message), data, { status });
+}
+
+async function readReply(response) {
+  let data;
+  try {
+    data = await response.json();
+  } catch (error) {
+    if (response.ok) throw error;
+    data = {};
+  }
+  if (!response.ok) throw responseError(response.status, data);
+  return data;
 }
 
 async function request(path, { body, method, session = token, after, signal, base = apiBase } = {}) {
@@ -231,18 +241,8 @@ async function request(path, { body, method, session = token, after, signal, bas
     payload = JSON.stringify(body);
   }
   const options = { method: method ?? (payload ? "POST" : "GET"), headers, body: payload, signal };
-  const response = path === "./api/state" && base === apiBase && realtimeBase.href !== apiBase.href
-    ? await readStateResponse(url, options)
-    : await fetch(url, options);
-  let data;
-  try {
-    data = await response.json();
-  } catch (error) {
-    if (response.ok) throw error;
-    data = {};
-  }
-  if (!response.ok) throw responseError(response.status, data);
-  return data;
+  if (path === "./api/state" && base === apiBase && realtimeBase.href !== apiBase.href) return readState(url, options);
+  return readReply(await fetch(url, options));
 }
 
 const voice = createVoice({
@@ -356,53 +356,53 @@ let signalQueue = Promise.resolve();
 async function action(type, args = {}) {
   if (!token) throw new Error("街に接続してから操作してください。");
   const generation = sessionGeneration;
-  const result = await request("./api/action", { body: { type, ...args }, after: lastSignal });
+  const result = await withDeadline((signal) => request("./api/action", {
+    body: { type, ...args }, after: lastSignal, signal,
+  }), TOWN_TIMEOUT);
   accept(result.state, generation);
   return result;
 }
 
-async function join(name, code) {
-  if (joining) return;
-  joining = true;
-  try {
-    let result;
-    const prior = code && localStorage.getItem(`${sessionKey}:${code}`);
-    if (prior) {
-      try {
-        const loaded = await request("./api/state", { session: prior });
-        result = { ...loaded, token: prior };
-      } catch (error) {
-        if (error.status !== 401) throw error;
-        localStorage.removeItem(`${sessionKey}:${code}`);
-      }
+async function join(name, code, signal) {
+  let result;
+  const prior = code && (localStorage.getItem(`${sessionKey}:${code}`) || (token.split(".")[0] === code ? token : ""));
+  if (prior) {
+    try {
+      const loaded = await request("./api/state", { session: prior, signal });
+      result = { ...loaded, token: prior };
+    } catch (error) {
+      if (error.status !== 401 || signal?.aborted) throw error;
+      localStorage.removeItem(`${sessionKey}:${code}`);
     }
-    result ??= await request("./api/join", {
-      body: { name, ...(code ? { code } : {}) }, session: "",
-    });
-    sessionGeneration++;
-    cancelAvatarUpload();
-    voice.reset();
-    state = null;
-    lastSignal = 0;
-    selectedHouse = null;
-    position = selection = building = preview = place = null;
-    token = result.token;
-    localStorage.setItem(sessionKey, token);
-    localStorage.setItem(`${sessionKey}:${result.state.code}`, token);
-    accept(result.state);
-    startPresence();
-    openPanel("guide", !narrow());
-    const url = new URL(location.href);
-    url.searchParams.delete("join");
-    history.replaceState(null, "", url);
-    return result;
-  } finally {
-    joining = false;
   }
+  result ??= await request("./api/join", {
+    body: { name, ...(code ? { code } : {}) }, session: "", signal,
+  });
+  if (signal?.aborted) throw signal.reason;
+  if (!result?.token || !result.state?.code || !result.state?.town || !result.state?.me || !Array.isArray(result.state.players)) {
+    throw new Error("街の情報を読み込めませんでした。もう一度お試しください。");
+  }
+  if (designing()) studio.discard();
+  sessionGeneration++;
+  cancelAvatarUpload();
+  voice.reset();
+  state = null;
+  lastSignal = 0;
+  selectedHouse = null;
+  position = selection = building = preview = place = null;
+  token = result.token;
+  localStorage.setItem(sessionKey, token);
+  localStorage.setItem(`${sessionKey}:${result.state.code}`, token);
+  accept(result.state);
+  startPresence();
+  openPanel("guide", !narrow());
+  const url = new URL(location.href);
+  url.searchParams.delete("join");
+  history.replaceState(null, "", url);
 }
 
 async function tick() {
-  if (token && !joining) {
+  if (token && !joinAttempt) {
     const generation = sessionGeneration;
     try {
       await refresh();
@@ -1011,6 +1011,7 @@ function avatarGimmicks(me) {
 
 function showDialog(html) {
   const dialog = $("dialog");
+  joinAttempt?.abort();
   $("dialog-content").innerHTML = html;
   if (!dialog.open) dialog.showModal();
 }
@@ -1049,7 +1050,8 @@ function openRoomDialog() {
       <p>街のみんなに表示される名前を決めてください。</p>
       <form data-form="join">
         <label class="field">表示名<input name="name" maxlength="24" required autofocus placeholder="あなたの名前"></label>
-        <label class="field">招待コード<input name="code" maxlength="20" value="${escape(inviteFromUrl)}" placeholder="空欄なら新しい街をつくります"></label>
+        <label class="field">招待コード<input name="code" maxlength="20" value="${escape(inviteFromUrl || token.split(".")[0])}" placeholder="空欄なら新しい街をつくります"></label>
+        <p data-join-status role="status" hidden></p>
         <button class="btn primary block" type="submit" value="start">はじめる</button>
       </form>
       <a class="btn soft block" href="./region.html" style="margin-top:10px">地域の地図から街をつくる</a>`);
@@ -1064,6 +1066,7 @@ function openRoomDialog() {
     <form data-form="join" style="margin-top:14px">
       <label class="field">表示名<input name="name" maxlength="24" required value="${escape(state?.me.name ?? "")}" placeholder="あなたの名前"></label>
       <label class="field">招待コード<input name="code" maxlength="20" value="${escape(inviteFromUrl)}" placeholder="友達の招待コード"></label>
+      <p data-join-status role="status" hidden></p>
       <div class="row wrap"><button class="btn primary grow" type="submit" value="join">街に参加する</button>
         <button class="btn ghost grow" type="submit" value="new">新しい街を作る</button></div>
     </form>
@@ -1586,7 +1589,7 @@ async function importAvatar(files) {
   update();
   try {
     load("ファイルを確認中");
-    const { prepareAvatar } = await import("./avatar-import.js?v=online-1794980046418");
+    const { prepareAvatar } = await import("./avatar-import.js");
     const model = await prepareAvatar(files, chooseAvatarModel, load, chooseFbxOptions);
     if (!model || generation !== sessionGeneration) return;
     url = URL.createObjectURL(model.blob);
@@ -1617,8 +1620,7 @@ async function importAvatar(files) {
 function refresh() {
   const generation = sessionGeneration;
   if (stateRequest?.generation === generation) return stateRequest.promise;
-  const signal = AbortSignal.timeout(7500);
-  const promise = request("./api/state", { after: lastSignal, signal }).then((result) => {
+  const promise = withDeadline((signal) => request("./api/state", { after: lastSignal, signal }), 7500).then((result) => {
     accept(result.state, generation);
   }).finally(() => {
     if (stateRequest?.promise === promise) stateRequest = null;
@@ -1898,27 +1900,58 @@ document.addEventListener("pointercancel", endStroke);
 // Mouths move with each resident's voice.
 setInterval(() => scene?.setVoiceLevels(voice.levels(current().id)), 70);
 
+function joinStatus(form, text) {
+  const status = form.querySelector("[data-join-status]");
+  status.textContent = text;
+  status.hidden = !text;
+}
+
+async function submitJoin(form, data, intent) {
+  if (joinAttempt) return;
+  const code = String(data.get("code") ?? "").trim().toUpperCase();
+  const creating = intent === "new" || ((intent === "start" || !intent && !state) && !code);
+  const name = String(data.get("name") ?? "").trim();
+  if (!name || (!creating && !code)) {
+    joinStatus(form, !name ? "表示名を入力してください。" : "招待コードを入力してください。");
+    return;
+  }
+  if (!creating && token && state?.code === code) {
+    $("dialog").close();
+    return;
+  }
+
+  const attempt = new AbortController();
+  joinAttempt = attempt;
+  const buttons = form.querySelectorAll('button[type="submit"]');
+  for (const button of buttons) button.disabled = true;
+  joinStatus(form, "街に接続しています…");
+  try {
+    await withDeadline((signal) => join(name, creating ? "" : code, signal), TOWN_TIMEOUT, attempt.signal);
+  } catch (error) {
+    if (!attempt.signal.aborted) joinStatus(form, connectionMessage(error));
+    return;
+  } finally {
+    joinAttempt = null;
+    for (const button of buttons) button.disabled = false;
+  }
+  if (form.isConnected && $("dialog").open) $("dialog").close();
+  notify(creating ? "新しい街を作りました。" : "街に参加しました。");
+  // Restoring a session can keep the previous name. A rename cannot delay entry.
+  if (current().name !== name) {
+    const generation = sessionGeneration;
+    action("rename", { name }).catch((error) => {
+      if (generation === sessionGeneration) notify(`街に入りましたが、表示名を変えられませんでした。${connectionMessage(error)}`);
+    });
+  }
+}
+
 document.addEventListener("submit", (event) => {
   const mode = event.target.dataset.form;
   if (!mode) return;
   event.preventDefault();
   const data = new FormData(event.target);
   if (mode === "join") {
-    run(async () => {
-      const code = String(data.get("code") ?? "").trim().toUpperCase();
-      const intent = event.submitter?.value;
-      const creating = intent === "new" || (intent === "start" && !code);
-      if (!creating && !code) throw new Error("招待コードを入力してください。");
-      if (!creating && token && state?.code === code) { $("dialog").close(); return; }
-      const name = String(data.get("name")).trim();
-      if (designing()) studio.discard();
-      const result = await join(name, creating ? "" : code);
-      if (!result) return;
-      // Rejoining a town restores the earlier resident, so apply the name typed in the form.
-      if (current().name !== name) await action("rename", { name });
-      $("dialog").close();
-      notify(creating ? "新しい街を作りました。" : "街に参加しました。");
-    });
+    run(() => submitJoin(event.target, data, event.submitter?.value));
   } else if (mode === "rename") {
     run(async () => {
       await action("rename", { name: String(data.get("name") ?? "").trim() });
@@ -1989,7 +2022,9 @@ document.addEventListener("keydown", (event) => {
 });
 
 $("dialog").addEventListener("close", () => {
-  if (!token && !joining) notify("「接続」から名前を決めて街に入れます。");
+  if ($("dialog").open) return;
+  joinAttempt?.abort();
+  if (!token) notify("「接続」から名前を決めて街に入れます。");
 });
 
 let wasNarrow = narrow();
@@ -2006,22 +2041,25 @@ async function boot() {
   makeScene();
   makeStudio();
   update();
-  try {
-    if (token) {
-      try {
-        await refresh();
+  let failed = false;
+  if (token) {
+    const generation = sessionGeneration;
+    try {
+      await refresh();
+      if (generation === sessionGeneration) {
         startPresence();
-        if (!current().muted) await action("mic", { muted: true });
-      } catch (error) {
-        if (error.status !== 401) throw error;
-        localStorage.removeItem(sessionKey);
-        token = "";
+        if (!current().muted) action("mic", { muted: true }).catch(() => {});
+      }
+    } catch (error) {
+      if (generation === sessionGeneration) {
+        if (error.status === 401) sessionError(error, generation);
+        else failed = true;
       }
     }
-    if (!state || (inviteFromUrl && state.code !== inviteFromUrl.toUpperCase())) openRoomDialog();
-  } catch (error) {
-    console.error(error);
-    notify("街に接続できませんでした。「接続」から入り直してください。");
+  }
+  if (!joinAttempt && !$("dialog").open && (!state || (inviteFromUrl && state.code !== inviteFromUrl.toUpperCase()))) {
+    openRoomDialog();
+    if (failed) joinStatus($("dialog").querySelector('[data-form="join"]'), "街に接続できませんでした。もう一度お試しください。");
   }
   tick();
 }
