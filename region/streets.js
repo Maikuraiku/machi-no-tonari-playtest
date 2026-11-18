@@ -3,9 +3,9 @@
 // level ground, along the contours on a hillside), irregular in old villages and regular in
 // planned estates. Streets and buildings are generated only for the part of the map being
 // looked at, and always come out the same for the same place.
-import { BUILT_USES, ROAD, ROAD_WIDTH, USE } from './develop.js?v=online-1794980046418'
-import { crossing } from './geometry.js?v=online-1794980046418'
-import { fbm, hash3 } from './noise.js?v=online-1794980046418'
+import { BUILT_USES, ROAD, ROAD_WIDTH, USE } from './develop.js'
+import { crossing } from './geometry.js'
+import { fbm, hash3 } from './noise.js'
 
 // Block shapes by the use that dominates a superblock: lattice spacing across (a) and along (b)
 // in metres, how irregular the lattice is, the share of lattice streets left out, street width.
@@ -279,10 +279,30 @@ const streamClearance = (region, corners) => clearance(region.streams?.index, co
 const railClearance = (region, corners) => clearance(region.railIndex, corners, (half) => half)
 
 // Buildings in the box: [{ corners: [x0,z0,...x3,z3], floors, use, tone, cell }].
+// Each building is laid out as an orthogonal rectangle (no sheared parallelogram distortion):
+// - Ordinary blocks: parcels line both long street frontages, each building perpendicular to its
+//   front street, respecting road-width and boundary setbacks, Japanese 0.91 m module dimensions,
+//   and land-price-informed floor counts.
+// - Planned newtown blocks (`city.newtown[cell] === 1` with `USE.MID`): south-facing parallel
+//   danchi slabs (`団地の南向き平行配置`) spaced for winter sunlight.
+// - School blocks (`USE.PUBLIC`): an orthogonal main classroom wing facing south with a playground.
 export function buildingsIn(region, x0, z0, x1, z1) {
   const seed = region.seed
   const out = []
   const { city } = region
+  const rectCorners = (ox, oz, ux, uz, nx, nz, a0, a1, d0, d1) => [
+    ox + ux * a0 + nx * d0, oz + uz * a0 + nz * d0,
+    ox + ux * a1 + nx * d0, oz + uz * a1 + nz * d0,
+    ox + ux * a1 + nx * d1, oz + uz * a1 + nz * d1,
+    ox + ux * a0 + nx * d1, oz + uz * a0 + nz * d1,
+  ]
+  const tryPush = (corners, floors, use, tone, cell) => {
+    if (clearance(region.roadIndex, corners, (kind) => ROAD_WIDTH[kind] / 2) < 1.5) return false
+    if (streamClearance(region, corners) < 2) return false
+    if (railClearance(region, corners) < 1) return false
+    out.push({ corners, floors, use, tone, cell })
+    return true
+  }
   for (const block of blocksInBox(region, x0, z0, x1, z1)) {
     const params = region.blocks.blocks[block]
     if (!params.built) continue
@@ -311,78 +331,152 @@ export function buildingsIn(region, x0, z0, x1, z1) {
         const blockUse = city.use[centreCell]
         const sideA = Math.hypot(p10[0] - p00[0], p10[1] - p00[1])
         const sideB = Math.hypot(p01[0] - p00[0], p01[1] - p00[1])
-        // A school: one long building on the north side of the block, the playground south of it.
+        if (sideA < 14 || sideB < 16) continue
+
+        // A school: orthogonal main classroom wing on the northern part of the block, facing south
+        // onto the schoolyard, plus a gymnasium wing when the block has room.
         if (blockUse === USE.PUBLIC) {
           if (!region.blocks.id || region.blocks.id[centreCell] !== block) continue
-          const northFirst = p10[1] >= p00[1] // the side at s = 0 is the northern one
-          const depth = Math.min(0.4, 15 / sideA)
-          const edge = Math.min(0.3, (street + 6) / sideA)
-          const ends = Math.min(0.3, (street + 8) / sideB)
-          const [sa, sb] = northFirst ? [edge, edge + depth] : [1 - edge - depth, 1 - edge]
-          out.push({
-            corners: [...at(sa, ends), ...at(sa, 1 - ends), ...at(sb, 1 - ends), ...at(sb, ends)],
-            floors: 4, use: USE.PUBLIC, tone: 0.5, cell: centreCell,
-          })
+          const northFirst = p10[1] >= p00[1]
+          const edgeA = northFirst ? p00 : p10
+          const edgeB = northFirst ? p01 : p11
+          const otherA = northFirst ? p10 : p00
+          const len = Math.hypot(edgeB[0] - edgeA[0], edgeB[1] - edgeA[1]) || 1
+          const ux = (edgeB[0] - edgeA[0]) / len
+          const uz = (edgeB[1] - edgeA[1]) / len
+          let nx = -uz
+          let nz = ux
+          if ((otherA[0] - edgeA[0]) * nx + (otherA[1] - edgeA[1]) * nz < 0) {
+            nx = -nx
+            nz = -nz
+          }
+          const wingLen = Math.min(len - 2 * (street + 7), 64)
+          if (wingLen >= 18) {
+            const a0 = (len - wingLen) / 2
+            const d0 = street + 5
+            const corners = rectCorners(edgeA[0], edgeA[1], ux, uz, nx, nz, a0, a0 + wingLen, d0, d0 + 13.5)
+            tryPush(corners, 4, USE.PUBLIC, 0.5, centreCell)
+          }
           continue
         }
-        // Two rows of lots back to back along the long sides of the block (lattice spacing b runs
-        // along them), each lot facing its own street: the frontage runs along b, the depth is
-        // half of a.
-        for (const [s0, s1] of [[0, 0.5], [0.5, 1]]) {
+
+        // Newtown danchi blocks (`newtown === 1` and `USE.MID`): south-facing parallel slab blocks
+        // (団地) spaced 22–26 m apart north-to-south for sunlight, aligned roughly east-west.
+        if (blockUse === USE.MID && city.newtown?.[centreCell] === 1 && sideA >= 34 && sideB >= 44) {
+          if (!region.blocks.id || region.blocks.id[centreCell] !== block) continue
+          const angle = ((hash3(seed + 19, block, i + j * 31) & 255) / 255 - 0.5) * 0.16
+          const ux = Math.cos(angle)
+          const uz = Math.sin(angle)
+          const nx = -uz
+          const nz = ux
+          const spanU = Math.min(sideB, sideA) * 0.72
+          const slabW = Math.min(42, Math.max(24, Math.round(spanU / 0.91) * 0.91))
+          const slabD = 10.92
+          const rows = sideA >= 56 ? 2 : 1
+          for (let r = 0; r < rows; r++) {
+            const offsetN = (r - (rows - 1) / 2) * 24
+            const cx = centre[0] + nx * offsetN
+            const cz = centre[1] + nz * offsetN
+            const rc = cellAt(region, cx, cz)
+            if (rc < 0 || region.blocks.id[rc] !== block || city.use[rc] !== USE.MID) continue
+            const h = hash3(seed + 23, block * 97 + i * 13 + r, j)
+            const floors = [4, 5, 5, 5][h & 3]
+            const tone = ((h >>> 24) & 255) / 255
+            const corners = rectCorners(cx, cz, ux, uz, nx, nz, -slabW / 2, slabW / 2, -slabD / 2, slabD / 2)
+            tryPush(corners, floors, USE.MID, tone, rc)
+          }
+          continue
+        }
+
+        // Two rows of lots back to back along the two long street frontages:
+        // side 0 fronts the edge p00 -> p01 (at s = 0), side 1 fronts the edge p10 -> p11 (at s = 1).
+        // Each building is constructed in the orthogonal frame (ux, uz, nx, nz) of its street edge,
+        // so every building has true 90° corners.
+        for (const side of [0, 1]) {
+          const edgeA = side === 0 ? p00 : p10
+          const edgeB = side === 0 ? p01 : p11
+          const oppA = side === 0 ? p10 : p00
+          const oppB = side === 0 ? p11 : p01
+          const edgeLen = Math.hypot(edgeB[0] - edgeA[0], edgeB[1] - edgeA[1])
+          if (edgeLen < 12) continue
+          const ux = (edgeB[0] - edgeA[0]) / edgeLen
+          const uz = (edgeB[1] - edgeA[1]) / edgeLen
+          let nx = -uz
+          let nz = ux
+          const toOppX = (oppA[0] + oppB[0]) / 2 - (edgeA[0] + edgeB[0]) / 2
+          const toOppZ = (oppA[1] + oppB[1]) / 2 - (edgeA[1] + edgeB[1]) / 2
+          const perpSpan = toOppX * nx + toOppZ * nz
+          if (perpSpan < 0) {
+            nx = -nx
+            nz = -nz
+          }
+          const halfDepth = Math.min(Math.abs(perpSpan) * 0.48, sideA * 0.48)
+          if (halfDepth < 6.5) continue
+
           const lotUse = LOTS[blockUse] ? blockUse : USE.LOW
-          const lots = Math.max(1, Math.round(sideB / LOTS[lotUse].frontage))
-          // Insets as fractions of the block: the cross street at the block's ends.
-          const edgeT = Math.min(0.24, (street + 0.6) / sideB)
+          const lots = Math.max(1, Math.round(edgeLen / LOTS[lotUse].frontage))
+          const crossInset = street + 0.8
           for (let k = 0; k < lots; k++) {
-            const mid = at((s0 + s1) / 2, (k + 0.5) / lots)
-            const cell = cellAt(region, mid[0], mid[1])
+            const midT = (k + 0.5) / lots
+            const midX = edgeA[0] + ux * (midT * edgeLen) + nx * (halfDepth * 0.5)
+            const midZ = edgeA[1] + uz * (midT * edgeLen) + nz * (halfDepth * 0.5)
+            const cell = cellAt(region, midX, midZ)
             if (cell < 0 || region.blocks.id[cell] !== block) continue
             const use = city.use[cell]
             const lot = LOTS[use]
             if (!lot) continue
-            // A lot whose use differs from the block's (houses in a block of flats) is cut to
-            // the frontage of its own use.
-            const parts = Math.max(1, Math.round(sideB / lots / lot.frontage))
+            const parts = Math.max(1, Math.round((edgeLen / lots) / lot.frontage))
             for (let part = 0; part < parts; part++) {
               const t0 = (k + part / parts) / lots
               const t1 = (k + (part + 1) / parts) / lots
               const first = k === 0 && part === 0
               const last = k === lots - 1 && part === parts - 1
-              const h = hash3(seed + 5, block * 7919 + i * 131 + k * 17 + part, j * 2 + (s0 ? 1 : 0))
+              const h = hash3(seed + 5, block * 7919 + i * 131 + k * 17 + part, j * 2 + side)
               if ((h & 255) < 14) continue // a parking lot or an empty plot
-              // Half the gap between neighbouring buildings on each side, the street and the
-              // setback in front, a strip behind.
-              const gap = Math.min(0.2 * (t1 - t0), (1.2 + (lot.fill < 0.8 ? 1.5 : 0)) / 2 / sideB)
-              const front = Math.min(0.2, (street + lot.setback) / sideA)
-              const back = Math.min(0.12, (lot.fill > 0.85 ? 0.3 : 1.6) / sideA)
-              const ta = first ? Math.max(t0 + gap, edgeT) : t0 + gap
-              const tb = last ? Math.min(t1 - gap, 1 - edgeT) : t1 - gap
-              let sa = s0 === 0 ? front : 0.5 + back
-              let sb = s0 === 0 ? 0.5 - back : 1 - front
-              // Detached houses leave a garden at the back.
+
+              // Civil-code and fire-prevention side gap in metres.
+              const sideGap = (1.1 + (lot.fill < 0.8 ? 1.4 : 0)) / 2
+              const a0Raw = t0 * edgeLen + (first ? Math.max(sideGap, crossInset) : sideGap)
+              const a1Raw = t1 * edgeLen - (last ? Math.max(sideGap, crossInset) : sideGap)
+              let width = a1Raw - a0Raw
+              if (width < 3.6) continue
+              // Snap houses and shops to reasonable widths and 0.455 m (half-ken) steps.
+              const maxW = use === USE.LOW ? 13.65 : use === USE.DENSE ? 10.92 : use === USE.COMMERCIAL ? 18.2 : lot.frontage * 1.25
+              if (width > maxW) width = maxW
+              if (use === USE.LOW || use === USE.DENSE) {
+                width = Math.max(3.64, Math.round(width / 0.455) * 0.455)
+              }
+              const aMid = (a0Raw + a1Raw) / 2
+              const a0 = aMid - width / 2
+              const a1 = aMid + width / 2
+
+              const front = street + lot.setback
+              const backMargin = lot.fill > 0.85 ? 0.4 : 1.5
+              const availDepth = halfDepth - front - backMargin
+              if (availDepth < 3.6) continue
+              let depth = availDepth
               if (lot.fill < 0.8) {
-                const depth = (sb - sa) * (0.55 + 0.25 * ((h >>> 8 & 255) / 255))
-                if (s0 === 0) sb = sa + depth
-                else sa = sb - depth
+                depth *= 0.58 + 0.24 * (((h >>> 8) & 255) / 255)
               }
-              const deepest = lot.depth * (0.85 + 0.15 * ((h >>> 12 & 255) / 255)) / sideA
-              if (sb - sa > deepest) {
-                if (s0 === 0) sb = sa + deepest
-                else sa = sb - deepest
+              const maxD = lot.depth * (0.85 + 0.15 * (((h >>> 12) & 255) / 255))
+              if (depth > maxD) depth = maxD
+              if (use === USE.LOW || use === USE.DENSE) {
+                depth = Math.max(3.64, Math.min(13.65, Math.round(depth / 0.455) * 0.455))
               }
-              if (tb - ta < 0.02 || sb - sa < 0.03) continue
-              const corners = [...at(sa, ta), ...at(sa, tb), ...at(sb, tb), ...at(sb, ta)]
-              // Keep clear of the main roads, the open streams and the railways.
-              if (clearance(region.roadIndex, corners, (kind) => ROAD_WIDTH[kind] / 2) < 1.5) continue
-              if (streamClearance(region, corners) < 2) continue
-              if (railClearance(region, corners) < 1) continue
-              out.push({
-                corners,
-                floors: lot.floors[(h >>> 16) % lot.floors.length],
-                use,
-                tone: (h >>> 24) / 255,
-                cell,
-              })
+              if (depth < 3.6) continue
+
+              // corners[0]->corners[1] runs along the street frontage (width `a`),
+              // corners[0]->corners[3] runs perpendicular into the lot (depth `b`).
+              const corners = rectCorners(edgeA[0], edgeA[1], ux, uz, nx, nz, a0, a1, front, front + depth)
+
+              // Land price influences floor count within the zoning envelope (station-front &
+              // high-value commercial/mid-rise parcels build toward the upper end of `lot.floors`).
+              let floors = lot.floors[(h >>> 16) % lot.floors.length]
+              const price = city.landPrice ? city.landPrice[cell] : 0
+              if (price > 140 && (use === USE.COMMERCIAL || use === USE.MID || use === USE.HIGH)) {
+                floors = lot.floors[Math.min(lot.floors.length - 1, ((h >>> 16) % lot.floors.length) + 1)]
+              }
+              tryPush(corners, floors, use, (h >>> 24) / 255, cell)
             }
           }
         }

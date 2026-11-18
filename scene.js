@@ -6,8 +6,8 @@ import * as THREE from 'three'
 import { createAvatars } from './world/avatars.js?v=8'
 import { SHOP_HOUSES, createBuilding } from './world/buildings.js'
 import { BODY as RADIUS, colliders, floorHeight, frontDoors, storeyShape, yardHeight } from './world/design.js'
-import { createEnvironment } from './world/environment.js?v=6'
-import { withRegion } from './world/region-layer.js?v=3'
+import { createEnvironment } from './world/environment.js?v=7'
+import { withRegion } from './world/region-layer.js?v=4'
 import { FIRST_PERSON_LAYER, THIRD_PERSON_LAYER } from './world/first-person.js?v=1'
 import { updateGlass } from './world/glass.js'
 import { TILE, disposeGroup, setAnisotropy, setDetail, textTexture } from './world/kit.js'
@@ -128,12 +128,12 @@ export function initScene(container, callbacks = {}) {
   rig.add(camera)
   world.add(rig)
   // (In a town made from the region map, the region's ground, buildings and monorail.)
-  const environment = withRegion(createEnvironment(world, renderer), world)
+  const sound = createSound()
+  const environment = withRegion(createEnvironment(world, renderer), world, { sound })
   const town = new THREE.Group()
   const markers = new THREE.Group()
   world.add(town, markers)
   const avatars = createAvatars(world, { onAvatarState: callbacks.onAvatarState, onAvatarLoad: callbacks.onAvatarLoad })
-  const sound = createSound()
   // The monorail: its beam, its train and its stations, where the town has a line (or one is
   // being tried out on this screen).
   const transit = createTransit({ sound })
@@ -516,7 +516,7 @@ export function initScene(container, callbacks = {}) {
   // The height of whatever is underfoot: the floor of the building one is in (lower in the
   // entrance of a house, rising along steps), the porch and the steps of a lot, or the street.
   function groundAt() {
-    if (local.ride) return transit.spotOf(local.ride).y
+    if (local.ride) return local.ride.source.spotOf(local.ride.passenger).y
     if (local.lift) return local.lift.entry.y0 + local.lift.lift.control.y
     if (home) {
       const { design } = home.building
@@ -855,11 +855,17 @@ export function initScene(container, callbacks = {}) {
   // A step taken aboard a train: about the car, or out of an open door onto the platform
   // that is there.
   function rideStep(dx, dz) {
-    const out = transit.walk(local.ride, dx, dz)
+    const { source, passenger } = local.ride
+    const out = source.walk(passenger, dx, dz)
     if (out === true) {
-      const spot = transit.spotOf(local.ride)
+      const spot = source.spotOf(passenger)
       here.x = spot.x
       here.z = spot.z
+      return
+    }
+    if (source === environment.regionTransit) {
+      local.ride = null
+      here.set(out.x, out.y, out.z)
       return
     }
     for (const entry of entries.values()) {
@@ -874,6 +880,15 @@ export function initScene(container, callbacks = {}) {
         return
       }
     }
+  }
+
+  function beginRide(source, passenger) {
+    local.ride = { source, passenger }
+    home = null
+    local.level = 0
+    route.length = 0
+    const spot = source.spotOf(passenger)
+    here.set(spot.x, spot.y, spot.z)
   }
 
   function step(dx, dz, steered = true) {
@@ -902,7 +917,17 @@ export function initScene(container, callbacks = {}) {
     }
     // Nobody walks through the piers of the monorail.
     if (local.level === 0 && transit.piers.length) [px, pz] = pushOut({ segments: [], boxes: transit.piers }, px, pz)
-    if (local.level === 0 && environment.region) [px, pz] = environment.pushOut(px, pz, pushOut, here.y)
+    if (local.level === 0 && environment.region) {
+      // A stopped train takes the passenger through the matching doorway before the platform
+      // edge collision. All other positions still have their fall protection.
+      const regionTransit = environment.regionTransit
+      const passenger = !home && !local.lift && regionTransit.board(here, px, pz)
+      if (passenger) {
+        beginRide(regionTransit, passenger)
+        return
+      }
+      [px, pz] = environment.pushOut(px, pz, pushOut, here.y)
+    }
     for (const entry of entries.values()) {
       // Upstairs, only the building one stands in matters.
       if (local.level > 0 && entry !== home) continue
@@ -945,13 +970,7 @@ export function initScene(container, callbacks = {}) {
       // Off the edge of a platform there is only a train to step into, while its doors are open.
       const ride = transit.board(px, pz, here.y)
       if (!ride) return
-      local.ride = ride
-      home = null
-      local.level = 0
-      route.length = 0
-      const spot = transit.spotOf(ride)
-      here.x = spot.x
-      here.z = spot.z
+      beginRide(transit, ride)
       return
     }
     here.x = px
@@ -1195,6 +1214,7 @@ export function initScene(container, callbacks = {}) {
         const hit = raycaster.ray.intersectBox(entry.box, forward)
         if (hit) reach = Math.min(reach, Math.max(1.2, focus.distanceTo(hit) - 0.4))
       }
+      reach = environment.cameraReach?.(raycaster.ray, reach) ?? reach
     }
     camera.position.set(
       focus.x + Math.sin(turn) * Math.cos(tilt) * reach,
@@ -1979,12 +1999,13 @@ export function initScene(container, callbacks = {}) {
     const previousPose = xrPose
     xrPose = immersive() ? readTracking(xrFrame, delta) : null
     // The monorail runs by the clock; whoever is aboard is carried along with it.
-    transit.update({ x: here.x, y: here.y, z: here.z, ride: local.ride })
+    const ride = local.ride
+    transit.update({ x: here.x, y: here.y, z: here.z, ride: ride?.source === transit ? ride.passenger : null })
+    environment.updateTransit(here, ride?.source === environment.regionTransit ? ride.passenger : null)
     if (local.ride) {
-      if (transit.riding(local.ride)) {
-        const spot = transit.spotOf(local.ride)
-        here.x = spot.x
-        here.z = spot.z
+      if (ride.source.riding(ride.passenger)) {
+        const spot = ride.source.spotOf(ride.passenger)
+        here.set(spot.x, spot.y, spot.z)
       } else local.ride = null
     }
     const [inputX, inputY] = readInput()

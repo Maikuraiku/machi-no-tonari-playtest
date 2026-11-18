@@ -78,7 +78,12 @@ export function createFineTerrain(region) {
         if (terrain.slope[at] > 0.04) height = Math.round(height / 1.4) * 1.4
       } else if (use === USE.FOREST || use === USE.GREEN || use === USE.PARK) {
         height += 0.45 * fbm(seed + 702, x / 14, z / 14, 3)
-      } else if (use === USE.FIELD) height += 0.07 * fbm(seed + 703, x / 6, z / 30, 2)
+      } else if (use === USE.FIELD) {
+        const angle = city.fieldAngle?.[at] ?? 0
+        const across = -Math.sin(angle) * x + Math.cos(angle) * z
+        const along = Math.cos(angle) * x + Math.sin(angle) * z
+        height += 0.06 * Math.sin(across * (Math.PI * 2 / 1.4)) + 0.05 * fbm(seed + 703, along / 25, across / 8, 2)
+      }
     }
     // Streams: an open channel, or nothing where the stream runs in a culvert.
     if (streams && water === WATER.NONE) {

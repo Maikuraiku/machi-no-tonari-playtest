@@ -2,11 +2,11 @@
 import * as THREE from 'three'
 import { Sky } from 'three/addons/objects/Sky.js'
 import { Water } from 'three/addons/objects/Water.js'
-import { Batch, TILE, disposeGroup, fbm, glass, glow, hash, material, waterNormals } from './kit.js?v=online-1794980046418'
-import { createClouds } from './clouds.js?v=online-1794980046418'
-import { createGrass } from './grass.js?v=online-1794980046418'
-import { drawPoles, manholeMesh, stopLegends } from './street.js?v=online-1794980046418'
-import { createTrees } from './trees.js?v=online-1794980046418'
+import { Batch, TILE, disposeGroup, fbm, glass, glow, hash, material, waterNormals } from './kit.js'
+import { createClouds } from './clouds.js'
+import { createGrass } from './grass.js'
+import { drawPoles, manholeMesh, stopLegends } from './street.js'
+import { createTrees } from './trees.js'
 
 const SEA_LEVEL = -1.7
 const ROAD_HALF = 2.9 // half the width of the carriageway; the rest of a road tile is pavement
@@ -123,6 +123,9 @@ export function createEnvironment(scene, renderer) {
   const meadow = createGrass()
   scene.add(meadow.mesh)
   let meadowWanted = true
+  let outdoors = false
+  for (const group of [ground, trees, sea, range]) group.visible = false
+  meadow.setShown(false)
   let groundKey = ''
   // What glass reflects of the surroundings: the trees as balls of leaves, and a small picture
   // of the ground from above.
@@ -424,10 +427,14 @@ export function createEnvironment(scene, renderer) {
     sun.target.position.set(Math.round(focus.x / texel) * texel, 0, Math.round(focus.z / texel) * texel)
     sun.position.copy(sun.target.position).addScaledVector(sunDirection, 200)
     sky.position.set(focus.x, 0, focus.z)
+    clouds.update(delta, focus)
+    if (!outdoors) {
+      meadow.setShown(false)
+      return
+    }
     range.position.set(focus.x * 0.9, 0, focus.z * 0.9)
     sea.position.set(Math.round(focus.x / 40) * 40, 0, Math.round(focus.z / 40) * 40)
     forest.update(delta)
-    clouds.update(delta, focus)
     // (A headset draws every frame twice: the grass is left out there.)
     meadow.setShown(meadowWanted && !immersive)
     meadow.update(delta, focus)
@@ -442,11 +449,13 @@ export function createEnvironment(scene, renderer) {
 
   return {
     sun, ambient, sunDirection, drawTown, setQuality, update,
-    trees: () => leafBalls,
-    groundMap: () => groundPicture,
-    // Indoors the town is hidden, but its light keeps coming through the windows.
+    trees: () => (outdoors ? leafBalls : []),
+    groundMap: () => (outdoors ? groundPicture : null),
+    // Indoors or in a region town the flat island is hidden, while the sky keeps lighting the world.
     setOutdoors(visible) {
-      for (const group of [ground, trees, sea, range]) group.visible = visible
+      outdoors = Boolean(visible)
+      for (const group of [ground, trees, sea, range]) group.visible = outdoors
+      meadow.setShown(outdoors && meadowWanted)
     },
     dispose() {
       disposeGroup(ground)

@@ -3,7 +3,7 @@
 // set: colour, the relief of its surface (as a normal map, with the height kept for parallax),
 // and how rough and how shaded each spot is.
 import * as THREE from 'three'
-import { CELL, CELLS, FINISHES, FRAME_COLORS, TILE, hash } from './design.js?v=online-1794980046418'
+import { CELL, CELLS, FINISHES, FRAME_COLORS, TILE, hash } from './design.js'
 
 export { CELL, CELLS, TILE, hash }
 
@@ -593,29 +593,50 @@ function courses(p, columns, rows, { joint, jointLevel = 0.2, gap = 2, stagger =
 // size in pixels, metres one repeat covers, depth of the relief in metres, roughness [low spots, high spots],
 // and whether the relief is deep enough to be worth showing with parallax.
 const TEXTURES = {
-  mortar: { size: 512, metres: 2.4, depth: 0.003, rough: [0.97, 0.88], paint(p) {
-    p.fill('#ece9e0').streaks(20, 'rgba(96,92,78,0.10)').streaks(5, 'rgba(60,72,60,0.08)', { width: 9, length: 0.4 })
-      .cracks(2, 'rgba(70,66,58,0.3)', { width: 0.8 })
-      .noise({ cells: 5, octaves: 3, colour: 12, height: 0.12, seed: 2 }).noise({ cells: 110, octaves: 2, colour: 10, height: 0.45, seed: 3 })
+  mortar: { size: 512, metres: 2.4, depth: 0.0035, rough: [0.97, 0.85], relief: true, paint(p) {
+    p.fill('#ece9e0').streaks(24, 'rgba(92,88,74,0.11)').streaks(7, 'rgba(58,70,58,0.09)', { width: 10, length: 0.45 })
+      .cracks(3, 'rgba(70,66,58,0.32)', { width: 0.8 })
+      .speckle(420, [0.4, 1.3], ['rgba(120,115,102,0.28)', 'rgba(255,252,245,0.32)'], (roll) => 0.35 + roll * 0.45)
+      .noise({ cells: 6, octaves: 4, colour: 14, height: 0.16, seed: 2, ridge: true }).noise({ cells: 120, octaves: 2, colour: 11, height: 0.48, seed: 3 })
   } },
-  stucco: { size: 512, metres: 2, depth: 0.005, rough: [0.97, 0.86], paint(p) {
-    p.fill('#f1eee7').noise({ cells: 9, octaves: 4, colour: 12, height: 0.55, seed: 4, ridge: true })
-      .noise({ cells: 120, octaves: 1, colour: 6, height: 0.16, seed: 5 }).noise({ cells: 3, octaves: 2, colour: 8, seed: 6 })
+  stucco: { size: 512, metres: 2, depth: 0.0055, rough: [0.97, 0.84], relief: true, paint(p) {
+    p.fill('#f1eee7').noise({ cells: 10, octaves: 4, colour: 14, height: 0.58, seed: 4, ridge: true })
+      .speckle(350, [0.5, 1.5], ['rgba(110,104,92,0.22)', 'rgba(255,255,250,0.28)'], null)
+      .noise({ cells: 120, octaves: 2, colour: 7, height: 0.2, seed: 5 }).noise({ cells: 3, octaves: 2, colour: 9, seed: 6 })
   } },
   plaster: { size: 256, metres: 3, depth: 0.001, rough: [0.9, 0.8], paint(p) {
     p.fill('#f2f1ed').noise({ cells: 5, octaves: 3, colour: 7, height: 0.2, seed: 7 }).noise({ cells: 90, octaves: 1, colour: 4, height: 0.1, seed: 8 })
   } },
-  concrete: { size: 512, metres: 3.6, depth: 0.004, rough: [0.97, 0.8], relief: true, paint(p) {
+  concrete: { size: 512, metres: 3.6, depth: 0.0045, rough: [0.96, 0.78], relief: true, paint(p) {
     const { size } = p
-    p.fill('#aaa8a1').streaks(16, 'rgba(70,72,70,0.14)', { width: 6, length: 0.7 })
-    // Formwork panels 0.9 m wide and 1.8 m tall leave seams, and the ties that held them leave holes.
-    for (let column = 0; column < 4; column++) p.rect(column * size / 4 - 1.5, 0, 3, size, 'rgba(52,52,50,0.5)', 0.12)
-    for (let row = 0; row < 2; row++) p.rect(0, row * size / 2 - 1.5, size, 3, 'rgba(52,52,50,0.5)', 0.12)
+    p.fill('#b0aea6')
+    // Subtle tone variation between formwork panels (0.9 m x 1.8 m).
     for (let column = 0; column < 4; column++) {
-      for (let row = 0; row < 4; row++) p.dot(column * size / 4 + size / 8, row * size / 4 + size / 8, 3.4, 'rgba(36,36,36,0.75)', 0)
+      for (let row = 0; row < 2; row++) {
+        const delta = (p.roll() - 0.5) * 10
+        p.rect(column * size / 4, row * size / 2, size / 4, size / 2, rgb([176, 174, 166], delta), 0.52 + (p.roll() - 0.5) * 0.06)
+      }
     }
-    p.speckle(260, [0.5, 1.6], ['rgba(40,40,40,0.4)', 'rgba(70,70,68,0.35)'], 0.1)
-      .noise({ cells: 5, octaves: 4, colour: 30, height: 0.08, seed: 9 }).noise({ cells: 150, octaves: 1, colour: 11, height: 0.22, seed: 10 })
+    p.streaks(22, 'rgba(66,68,66,0.16)', { width: 7, length: 0.72 })
+    // Formwork panel seams with subtle lip highlights and tie-rod cone holes (セパ穴).
+    for (let column = 0; column < 4; column++) {
+      p.rect(column * size / 4 - 1.5, 0, 3, size, 'rgba(48,48,46,0.55)', 0.12)
+      p.rect(column * size / 4 + 1.5, 0, 1.5, size, 'rgba(240,238,232,0.24)', 0.65)
+    }
+    for (let row = 0; row < 2; row++) {
+      p.rect(0, row * size / 2 - 1.5, size, 3, 'rgba(48,48,46,0.55)', 0.12)
+      p.rect(0, row * size / 2 + 1.5, size, 1.5, 'rgba(240,238,232,0.22)', 0.65)
+    }
+    for (let column = 0; column < 4; column++) {
+      for (let row = 0; row < 4; row++) {
+        const cx = column * size / 4 + size / 8
+        const cy = row * size / 4 + size / 8
+        p.dot(cx, cy, 4.8, 'rgba(130,128,122,0.5)', 0.35)
+        p.dot(cx, cy, 3.2, 'rgba(32,32,32,0.78)', 0.02)
+      }
+    }
+    p.speckle(360, [0.5, 1.8], ['rgba(38,38,38,0.42)', 'rgba(74,74,70,0.35)', 'rgba(225,223,216,0.25)'], 0.12)
+      .noise({ cells: 5, octaves: 4, colour: 28, height: 0.1, seed: 9 }).noise({ cells: 150, octaves: 1, colour: 12, height: 0.24, seed: 10 })
   } },
   concreteStained: { size: 512, metres: 3.6, depth: 0.005, rough: [0.98, 0.84], relief: true, paint(p) {
     const { size } = p
@@ -638,21 +659,25 @@ const TEXTURES = {
     courses(p, 8, 16, { joint: '#cfcbc2', gap: 4, tone: 10, bevel: 2, palette: [[240, 238, 232], [232, 230, 224], [244, 242, 238], [226, 222, 214]] })
     p.noise({ cells: 70, octaves: 2, colour: 9, height: 0.2, seed: 15 }).noise({ cells: 4, octaves: 3, colour: 10, seed: 16 })
   } },
-  tile: { size: 512, metres: 0.9, depth: 0.004, rough: [0.92, 0.28], relief: true, paint(p) {
-    courses(p, 9, 18, { joint: '#8f8a80', jointLevel: 0.25, gap: 3.4, tone: 12, bevel: 1.5, palette: [[244, 244, 240], [236, 236, 232], [248, 248, 246], [230, 230, 226]] })
-    p.noise({ cells: 3, octaves: 3, colour: 8, seed: 17 }).noise({ cells: 90, octaves: 1, colour: 4, height: 0.05, seed: 18 })
+  tile: { size: 512, metres: 0.9, depth: 0.0045, rough: [0.9, 0.24], relief: true, paint(p) {
+    courses(p, 9, 18, { joint: '#868178', jointLevel: 0.2, gap: 3.4, tone: 14, bevel: 1.8, palette: [[244, 243, 238], [235, 234, 229], [248, 247, 244], [228, 226, 220], [239, 236, 228]] })
+    p.streaks(8, 'rgba(80,76,68,0.08)', { width: 5, length: 0.45 })
+      .noise({ cells: 4, octaves: 3, colour: 9, seed: 17 }).noise({ cells: 90, octaves: 1, colour: 5, height: 0.06, seed: 18 })
   } },
-  siding: { size: 512, metres: 1.44, depth: 0.007, rough: [0.92, 0.72], relief: true, paint(p) {
+  siding: { size: 512, metres: 1.44, depth: 0.0075, rough: [0.9, 0.68], relief: true, paint(p) {
     const { size } = p
     p.fill('#efefeb')
-    // Lapped boards: each one leans out towards its lower edge and casts a line of shadow there.
+    // Lapped boards with vertical panel caulking joints and subtle grain.
     for (let board = 0; board < 8; board++) {
       const top = board * size / 8
-      for (let step = 0; step < 16; step++) p.rect(0, top + step * size / 128, size, size / 128 + 0.5, null, 0.35 + step / 15 * 0.55)
-      p.rect(0, top + size / 8 - 3, size, 3, 'rgba(0,0,0,0.3)', 0.05)
-      p.rect(0, top, size, 2, 'rgba(255,255,255,0.35)', null)
+      const tint = (p.roll() - 0.5) * 7
+      for (let step = 0; step < 16; step++) p.rect(0, top + step * size / 128, size, size / 128 + 0.5, rgb([239, 239, 235], tint), 0.34 + step / 15 * 0.56)
+      p.rect(0, top + size / 8 - 3.2, size, 3.2, 'rgba(0,0,0,0.34)', 0.04)
+      p.rect(0, top, size, 2.2, 'rgba(255,255,255,0.38)', null)
     }
-    p.noise({ cells: 5, cellsY: 90, octaves: 2, colour: 9, height: 0.07, seed: 19 })
+    // Vertical panel joint line (サイディングのコーキング目地).
+    p.rect(size * 0.5 - 1.2, 0, 2.4, size, 'rgba(90,88,82,0.28)', 0.16)
+    p.noise({ cells: 6, cellsY: 96, octaves: 2, colour: 10, height: 0.08, seed: 19 })
   } },
   planks: { size: 512, metres: 1.2, depth: 0.005, rough: [0.95, 0.78], relief: true, paint(p) {
     const { size } = p
@@ -761,7 +786,7 @@ const TEXTURES = {
   carpet: { size: 256, metres: 1, depth: 0.003, rough: [1, 0.96], paint(p) {
     p.fill('#cfcfcf').noise({ cells: 128, octaves: 1, colour: 40, height: 0.7, seed: 40 }).noise({ cells: 5, octaves: 3, colour: 10, seed: 41 })
   } },
-  kawara: { size: 512, metres: 1.5, depth: 0.03, rough: [0.8, 0.5], relief: true, paint(p) {
+  kawara: { size: 512, metres: 1.5, depth: 0.032, rough: [0.76, 0.42], relief: true, paint(p) {
     const { size } = p
     const columns = 6
     const rows = 5
@@ -770,52 +795,54 @@ const TEXTURES = {
       const top = row * size / rows
       for (let column = 0; column < columns; column++) {
         const left = column * size / columns
-        const shade = (p.roll() - 0.5) * 22
-        // Each tile is a shallow wave: a rounded ridge on one side and a trough on the other.
+        const shade = (p.roll() - 0.5) * 24
+        // Each tile is a shallow wave (和瓦の波): a rounded ridge on one side and a trough on the other.
         for (let slice = 0; slice < 16; slice++) {
           const wave = Math.sin(slice / 15 * Math.PI * 1.25 - 0.25)
-          p.rect(left + slice * size / columns / 16, top, size / columns / 16 + 0.6, size / rows, rgb([205, 205, 205], shade + wave * 26), 0.25 + Math.max(0, wave) * 0.6)
+          const sheen = wave > 0.55 ? 8 : 0
+          p.rect(left + slice * size / columns / 16, top, size / columns / 16 + 0.6, size / rows, rgb([206, 206, 208], shade + wave * 28 + sheen), 0.22 + Math.max(0, wave) * 0.64)
         }
-        p.rect(left, top + size / rows - 5, size / columns, 5, 'rgba(0,0,0,0.4)', 0.02)
-        p.rect(left, top, size / columns, 3, 'rgba(255,255,255,0.22)', null)
+        p.rect(left, top + size / rows - 5.5, size / columns, 5.5, 'rgba(0,0,0,0.44)', 0.02)
+        p.rect(left, top, size / columns, 3.2, 'rgba(255,255,255,0.26)', null)
       }
     }
     p.noise({ cells: 60, octaves: 2, colour: 10, height: 0.05, seed: 42 }).noise({ cells: 3, octaves: 2, colour: 12, seed: 43 })
   } },
-  slate: { size: 512, metres: 1.2, depth: 0.008, rough: [0.95, 0.7], relief: true, paint(p) {
+  slate: { size: 512, metres: 1.2, depth: 0.009, rough: [0.94, 0.66], relief: true, paint(p) {
     const { size } = p
     p.fill('#b9b9b9', 0.5)
     for (let row = 0; row < 4; row++) {
       for (let column = -1; column < 6; column++) {
         const left = column * size / 6 + (row % 2 ? size / 12 : 0)
         const top = row * size / 4
-        const shade = (p.roll() - 0.5) * 30
-        for (let step = 0; step < 8; step++) p.rect(left + 1, top + step * size / 32, size / 6 - 2, size / 32 + 0.5, rgb([196, 196, 196], shade), 0.3 + step / 7 * 0.6)
-        p.rect(left, top + size / 4 - 4, size / 6, 4, 'rgba(0,0,0,0.42)', 0.04)
-        p.rect(left - 1, top, 2, size / 4, 'rgba(0,0,0,0.3)', 0.1)
+        const shade = (p.roll() - 0.5) * 32
+        for (let step = 0; step < 8; step++) p.rect(left + 1, top + step * size / 32, size / 6 - 2, size / 32 + 0.5, rgb([196, 196, 196], shade), 0.28 + step / 7 * 0.62)
+        p.rect(left, top + size / 4 - 4.2, size / 6, 4.2, 'rgba(0,0,0,0.45)', 0.04)
+        p.rect(left, top + size / 4 - 6, size / 6, 1.8, 'rgba(255,255,255,0.18)', null)
+        p.rect(left - 1, top, 2, size / 4, 'rgba(0,0,0,0.32)', 0.1)
       }
     }
-    p.noise({ cells: 50, octaves: 3, colour: 14, height: 0.08, seed: 44 })
+    p.noise({ cells: 50, octaves: 3, colour: 15, height: 0.09, seed: 44 })
   } },
-  roofMetal: { size: 256, metres: 0.9, depth: 0.022, rough: [0.62, 0.42], relief: true, paint(p) {
+  roofMetal: { size: 256, metres: 0.9, depth: 0.024, rough: [0.58, 0.36], relief: true, paint(p) {
     const { size } = p
     p.fill('#d6d6d6', 0.3)
-    for (let seam = 0; seam < 2; seam++) {
-      const x = seam * size / 2
-      p.rect(x - 6, 0, 12, size, 'rgba(0,0,0,0.22)', 0.65)
-      p.rect(x - 2.5, 0, 5, size, 'rgba(255,255,255,0.4)', 1)
+    for (let seam = 0; seam < 4; seam++) {
+      const x = seam * size / 4
+      p.rect(x - 5, 0, 10, size, 'rgba(0,0,0,0.24)', 0.65)
+      p.rect(x - 2, 0, 4, size, 'rgba(255,255,255,0.45)', 1)
     }
     p.noise({ cells: 2, cellsY: 40, octaves: 1, colour: 6, seed: 45 }).noise({ cells: 4, octaves: 3, colour: 8, height: 0.04, seed: 46 })
   } },
-  asphalt: { size: 512, metres: 4, depth: 0.004, rough: [0.97, 0.86], paint(p) {
-    p.fill('#47494d').speckle(1500, [0.5, 1.5], ['rgba(170,170,170,0.5)', 'rgba(14,14,16,0.5)', 'rgba(120,116,108,0.45)'], (roll) => 0.3 + roll * 0.6)
-      .cracks(4, 'rgba(16,16,18,0.7)', { width: 1.6, level: 0.05, steps: 34 })
-      .noise({ cells: 4, octaves: 4, colour: 18, height: 0.08, seed: 47 }).noise({ cells: 170, octaves: 1, colour: 16, height: 0.4, seed: 48 })
+  asphalt: { size: 512, metres: 4, depth: 0.0045, rough: [0.96, 0.82], relief: true, paint(p) {
+    p.fill('#45474b').speckle(2100, [0.5, 1.7], ['rgba(182,182,178,0.52)', 'rgba(14,14,16,0.52)', 'rgba(128,124,114,0.48)', 'rgba(210,206,196,0.35)'], (roll) => 0.28 + roll * 0.64)
+      .cracks(5, 'rgba(16,16,18,0.72)', { width: 1.5, level: 0.05, steps: 34 })
+      .noise({ cells: 5, octaves: 4, colour: 19, height: 0.1, seed: 47 }).noise({ cells: 180, octaves: 1, colour: 17, height: 0.42, seed: 48 })
   } },
-  sidewalk: { size: 512, metres: 2.4, depth: 0.005, rough: [0.97, 0.84], relief: true, paint(p) {
-    courses(p, 6, 6, { joint: '#6d6b66', jointLevel: 0.15, gap: 4, stagger: false, tone: 14, bevel: 2, palette: [[190, 188, 180], [180, 178, 170], [198, 196, 190], [172, 170, 162]] })
-    p.speckle(300, [0.5, 1.6], ['rgba(60,60,56,0.3)', 'rgba(230,230,224,0.25)'], null)
-      .noise({ cells: 60, octaves: 2, colour: 14, height: 0.2, seed: 49 }).noise({ cells: 3, octaves: 3, colour: 16, seed: 50 })
+  sidewalk: { size: 512, metres: 2.4, depth: 0.0055, rough: [0.96, 0.8], relief: true, paint(p) {
+    courses(p, 6, 6, { joint: '#686660', jointLevel: 0.14, gap: 4, stagger: true, tone: 16, bevel: 2.2, palette: [[194, 191, 183], [182, 179, 171], [202, 199, 191], [174, 171, 163], [188, 183, 173]] })
+    p.speckle(420, [0.5, 1.7], ['rgba(56,56,52,0.32)', 'rgba(236,235,228,0.28)'], null)
+      .noise({ cells: 64, octaves: 2, colour: 15, height: 0.22, seed: 49 }).noise({ cells: 3, octaves: 3, colour: 16, seed: 50 })
   } },
   grass: { size: 512, metres: 6, depth: 0.02, rough: [1, 0.92], paint(p) {
     const { size } = p

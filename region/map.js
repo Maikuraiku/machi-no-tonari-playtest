@@ -1,11 +1,11 @@
 // The region map page. A worker generates the region and draws the ground as tiles; this page
 // lays the tiles out, draws roads, streams and railways over them, and shows the numbers, the
 // railway lines and each line's vertical profile.
-import { ROAD, ROAD_WIDTH } from './develop.js?v=online-1794980046418'
-import { STRUCTURE, STRUCTURE_NAMES } from './rail.js?v=online-1794980046418'
-import { regionSeed } from './region.js?v=online-1794980046418'
-import { createGameLink } from './game-link.js?v=online-1794980046418'
-import { COST_STOPS, ERA_COLORS, ERA_LABELS, HEIGHT_STOPS, LAYERS, LEVELS, PEOPLE_STOPS, TILE, USE_STYLE, metresPerPixel } from './render.js?v=online-1794980046418'
+import { ROAD, ROAD_WIDTH } from './develop.js'
+import { STRUCTURE, STRUCTURE_NAMES } from './rail.js'
+import { regionSeed } from './region.js'
+import { createGameLink } from './game-link.js'
+import { COST_STOPS, ERA_COLORS, ERA_LABELS, HEIGHT_STOPS, LAYERS, LEVELS, PEOPLE_STOPS, PRICE_STOPS, TILE, USE_STYLE, metresPerPixel } from './render.js'
 
 const $ = (selector, root = document) => root.querySelector(selector)
 const FONT = '"Yu Gothic UI", "Hiragino Sans", "Noto Sans JP", Meiryo, system-ui, sans-serif'
@@ -69,7 +69,7 @@ function startWorker() {
   tileRequests.clear()
   inflight = 0
   queue = []
-  worker = new Worker(new URL('./worker.js?v=online-1794980046418', import.meta.url), { type: 'module' })
+  worker = new Worker(new URL('./worker.js?v=3', import.meta.url), { type: 'module' })
   worker.onmessage = (event) => onMessage(event.data)
   worker.onerror = (event) => {
     event.preventDefault?.()
@@ -147,9 +147,12 @@ function onReady(message) {
   if (Number.isInteger(wanted) && state.overlay.lines.some((line) => line.id === wanted)) selectLine(wanted, false)
   const district = state.pendingDistrict
   state.pendingDistrict = null
-  if (Number.isInteger(district) && state.overlay.districts.list[district]) {
+  const list = state.overlay.districts?.list ?? []
+  const chosen = Number.isInteger(district) && list[district] ? district
+    : (list.filter((entry) => entry?.stations?.length).sort((a, b) => Math.hypot(a.x - 10000, a.z - 10000) - Math.hypot(b.x - 10000, b.z - 10000))[0] ?? list[0])?.id
+  if (Number.isInteger(chosen) && list[chosen]) {
     state.district = -1
-    selectDistrict(district)
+    selectDistrict(chosen)
   }
   requestDraw()
 }
@@ -904,10 +907,11 @@ function showReadout(info) {
   const use = USE_STYLE[info.use]?.name ?? ''
   const era = info.era ? `${ERA_LABELS[info.era]}${info.era === 1 ? 'から' : 'に'}市街化` : '市街化していない'
   box.hidden = false
+  const priceText = info.landPrice > 0 ? `・地価 <b>${info.landPrice.toFixed(1)}万円/m²</b>（坪${whole(info.landPrice * 3.30578)}万円）` : ''
   box.innerHTML = [
     `<b>東へ ${(info.x / 1000).toFixed(2)}km・南へ ${(info.z / 1000).toFixed(2)}km</b>`,
     `標高 <b>${info.height.toFixed(1)}m</b>（整備前 ${info.natural.toFixed(1)}m）・勾配 ${(info.slope * 100).toFixed(1)}%`,
-    `${LAND_NAMES[info.land]}・${water || use}${info.newtown ? '（ニュータウン）' : ''}`,
+    `${LAND_NAMES[info.land]}・${water || use}${info.newtown ? '（ニュータウン）' : ''}${priceText}`,
     `${era}・人口密度 ${whole(info.density)}人/km²`,
     Number.isFinite(info.minutes) ? `都心まで道路で約${Math.round(info.minutes)}分` : '',
   ].filter(Boolean).join('<br>')
@@ -938,6 +942,9 @@ function renderLegend() {
   if (layer === 'relief' || layer === 'natural') {
     box.innerHTML = `<div class="ramp" style="background:${gradient(HEIGHT_STOPS)}"></div><div class="ticks"><span>0m</span><span>25m</span><span>55m</span><span>90m</span></div>
       <p class="note">${layer === 'natural' ? '人が手を入れる前の地形。台地を刻む谷、崖線、大きな川の低地、対岸の丘陵。' : '造成・盛土・堤防の後の地面。拡大すると1m単位の地面（ひな壇、田の段、堤防、川の断面）になります。'}</p>`
+  } else if (layer === 'price') {
+    box.innerHTML = `<div class="ramp" style="background:${gradient(PRICE_STOPS)}"></div><div class="ticks"><span>0</span><span>25</span><span>70</span><span>140</span><span>260万円/m²</span></div>
+      <p class="note">公示地価ベースの土地価格シミュレーション（万円/m²）。都心への所要時間、最寄り駅との距離・乗降客数、幹線道路・商業核、台地と低地の水害リスク・傾斜から算出しています。</p>`
   } else if (layer === 'people') {
     box.innerHTML = `<div class="ramp" style="background:${gradient(PEOPLE_STOPS)}"></div><div class="ticks"><span>0</span><span>1万</span><span>2万</span><span>3万</span><span>4.5万人/km²</span></div>
       <p class="note">建物の床面積から計算した夜間人口。遠目では100mメッシュの平均です。</p>`
@@ -965,6 +972,7 @@ function renderSummary() {
       ${stat('人口', `${persons(s.people.residents)}人`, `平均 ${whole(s.people.density.mean)}人/km²`)}
       ${stat('世帯・従業者', `${persons(s.people.households)}世帯`, `従業者 ${persons(s.people.jobs)}人`)}
       ${stat('市街化した土地', percent(s.city.builtShare), `ニュータウン ${(s.city.newtownArea / 1e6).toFixed(1)}km²`)}
+      ${s.city.landPrice ? stat('平均地価', `${s.city.landPrice.mean.toFixed(1)}万円/m²`, `住宅 ${s.city.landPrice.residentialMean.toFixed(1)}・商業 ${s.city.landPrice.commercialMean.toFixed(1)}・最高 ${whole(s.city.landPrice.max)}万円/m²`) : ''}
       ${stat('標高', `${s.terrain.lowest.toFixed(0)}〜${s.terrain.highest.toFixed(0)}m`, `台地 ${percent(s.terrain.plateau)}・低地 ${percent(s.terrain.lowland)}・丘陵 ${percent(s.terrain.hills)}`)}
       ${stat('幹線道路', km(roads[2] + roads[3] + roads[4], 0), `国道級 ${km(roads[4], 0)}・都道級 ${km(roads[3], 0)}`)}
       ${stat('1日の移動', `${persons(s.demand.trips)}回`, `うち都心へ ${persons(s.demand.toMetropolis)}回`)}
@@ -1031,6 +1039,7 @@ function renderDistrict() {
       ${stat('面積', `${(district.area / 1e6).toFixed(2)}km²`, `東西 ${Math.round(x1 - x0)}m・南北 ${Math.round(z1 - z0)}m`)}
       ${stat('人口', `${whole(district.residents)}人`, `${whole(district.households)}世帯・従業者 ${whole(district.jobs)}人`)}
       ${stat('市街地', percent(district.built), `いちばん多いのは${USE_STYLE[district.use]?.name ?? ''}`)}
+      ${district.landPrice ? stat('平均地価', `${district.landPrice.toFixed(1)}万円/m²`, `坪あたり約${whole(district.landPrice * 3.30578)}万円`) : ''}
       ${stat('駅', district.stations.length ? district.stations.map(escape).join('・') : 'なし', `隣の丁目 ${district.neighbours.length}`)}
     </dl>
     <p class="note" style="margin-top:8px">${escape(town.name)}は${town.districts.length}丁目まで（${(town.area / 1e6).toFixed(2)}km²・人口 ${persons(town.residents)}人）。町の境は幹線道路・地上の線路・川・崖、丁目の境は補助的な道路を目安に引いています。</p>

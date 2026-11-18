@@ -10,6 +10,7 @@
 import { connectionMessage, TOWN_TIMEOUT, withDeadline } from '../town-connection.js'
 
 const SESSION = 'machi-no-tonari:session'
+const NAME_KEY = 'machi-no-tonari:name'
 const regionKey = (seed) => `machi-no-tonari:region:${seed}`
 const apiBase = new URL(document.querySelector('meta[name="machi-api-origin"]')?.content || './', location.href)
 const escape = (text) => String(text).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
@@ -227,13 +228,16 @@ export function createGameLink({ worker, seed, fingerprint = () => null }) {
   // The name this browser goes by in the game, for the name field.
   async function nameOf() {
     if (name !== null) return name
-    name = ''
+    name = stored.get(NAME_KEY) ?? ''
     const token = stored.get(SESSION)
     if (token) {
       try {
         const { state } = await call('./api/state', { token })
-        name = state?.me?.name ?? ''
-      } catch { /* left empty */ }
+        if (state?.me?.name) {
+          name = state.me.name
+          stored.set(NAME_KEY, name)
+        }
+      } catch { /* keep stored name */ }
     }
     return name
   }
@@ -245,7 +249,7 @@ export function createGameLink({ worker, seed, fingerprint = () => null }) {
     box.innerHTML = `<div class="game-link">
       <h3>ゲームで使う</h3>
       <div class="game-town" hidden></div>
-      <p class="note">この丁目の駅前から、地域のデータそのままの3Dの街をつくります。地形・道路・川はこの地図のとおりで、モノレールは路線図のとおりに走ります。</p>
+      <p class="note">この丁目の駅前から、地域のデータそのままの3Dの街をつくります。地形・道路・川はこの地図のとおりで、モノレールは路線図のとおりに走ります（地図上の別の丁目をクリックすると、始める場所を変えられます）。</p>
       <label class="field">表示名<input name="game-name" maxlength="24" autocomplete="nickname" placeholder="ゲームで表示される名前"></label>
       <fieldset class="choice">
         <legend>建物</legend>
@@ -341,6 +345,7 @@ export function createGameLink({ worker, seed, fingerprint = () => null }) {
         stored.set(SESSION, token)
         stored.set(`${SESSION}:${code}`, token)
         stored.set(regionKey(regionSeed), code)
+        stored.set(NAME_KEY, player)
         towns.delete(regionSeed)
         name = player
         for (const [index, line] of pack.packs.entries()) {

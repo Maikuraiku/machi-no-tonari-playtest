@@ -2,10 +2,10 @@
 // each layer colours the ground by one thing (height, land use, people, era, cost) and shades it
 // by the relief. Close in, the ground comes from the 1 m sampler, and local streets and buildings
 // are drawn on top. The raster part needs no canvas, so it runs in a worker and in Node alike.
-import { BUILT_USES, ERAS, USE } from './develop.js?v=online-1794980046418'
-import { fbm } from './noise.js?v=online-1794980046418'
-import { LAND, bicubic, bilinear } from './terrain.js?v=online-1794980046418'
-import { buildingsIn, streetsIn } from './streets.js?v=online-1794980046418'
+import { BUILT_USES, ERAS, USE } from './develop.js'
+import { fbm } from './noise.js'
+import { LAND, bicubic, bilinear } from './terrain.js'
+import { buildingsIn, streetsIn } from './streets.js'
 
 export const TILE = 256
 export const LEVELS = 8 // level 0 shows the whole region in one tile; each level halves the metres per pixel
@@ -16,6 +16,7 @@ export const LAYERS = {
   relief: { name: '地形（整備後）' },
   natural: { name: '地形（整備前）' },
   use: { name: '土地利用' },
+  price: { name: '地価（土地の価格）' },
   people: { name: '人口密度' },
   era: { name: '市街化の年代' },
   cost: { name: '鉄道の建設費' },
@@ -82,29 +83,39 @@ function copy(out, color) {
 
 export const HEIGHT_STOPS = [[0, '#5f9a73'], [12, '#98c08a'], [25, '#d8dca2'], [40, '#e3c88e'], [55, '#cfa577'], [70, '#ad8461'], [90, '#866852']]
 export const PEOPLE_STOPS = [[0, '#eef0ea'], [2000, '#fff2c2'], [6000, '#fdd58a'], [10000, '#fbb062'], [14000, '#f4834a'], [18000, '#de4f35'], [24000, '#b52430'], [32000, '#7f1032'], [45000, '#4c0b2e']]
+export const PRICE_STOPS = [[0, '#e8ece6'], [10, '#cbe2b0'], [25, '#f4e69a'], [45, '#f8bf6c'], [70, '#ee8345'], [110, '#cf4438'], [170, '#8e1b46'], [260, '#4a0d38']]
 export const COST_STOPS = [[20, '#2f8a4f'], [85, '#a8d672'], [150, '#fde38c'], [250, '#f57b48'], [340, '#a8112b'], [500, '#7a1530'], [650, '#5d8fd8']]
 export const ERA_COLORS = ['#e8ece2', '#6e4026', '#a8512b', '#d27a2c', '#e6a43a', '#e3d04d', '#a7d35c', '#5cbd8c', '#3a9fbc', '#4569c6']
 export const ERA_LABELS = ['未市街地', ...ERAS.slice(1).map((year) => (year === 1700 ? '江戸期' : `〜${year}年`))]
 const heightColor = ramp(HEIGHT_STOPS)
 const peopleColor = ramp(PEOPLE_STOPS)
+const priceColor = ramp(PRICE_STOPS)
 const costColor = ramp(COST_STOPS)
 const ERA_RGB = ERA_COLORS.map(hex)
 
 // Mean-pooled grids that coarse tiles read instead of single 20 m cells.
 export function prepareRender(region) {
-  const { terrain, people, size } = region
+  const { terrain, city, people, size } = region
   const { columns, cell } = terrain
   const factor = 5 // 100 m
   const n = Math.ceil(columns / factor)
   const density = new Float32Array(n * n)
+  const price100 = new Float32Array(n * n)
   for (let row = 0; row < columns; row++) {
     for (let column = 0; column < columns; column++) {
-      density[Math.floor(column / factor) + Math.floor(row / factor) * n] += people.residents[column + row * columns]
+      const idx = column + row * columns
+      const cell100 = Math.floor(column / factor) + Math.floor(row / factor) * n
+      density[cell100] += people.residents[idx]
+      if (city.landPrice) price100[cell100] += city.landPrice[idx]
     }
   }
   const perKm2 = 1e6 / (factor * cell) ** 2
-  for (let index = 0; index < density.length; index++) density[index] *= perKm2
-  region.render = { density100: density, density100Columns: n, density100Cell: factor * cell, size }
+  const invCount = 1 / (factor * factor)
+  for (let index = 0; index < density.length; index++) {
+    density[index] *= perKm2
+    price100[index] *= invCount
+  }
+  region.render = { density100: density, price100, density100Columns: n, density100Cell: factor * cell, size }
   return region.render
 }
 
@@ -182,7 +193,23 @@ export function renderTile(region, layer, level, tx, tz, rgba = new Uint8Clamped
           break
         case 'use':
           copy(color, detail ? YARD_RGB[use] : USE_RGB[use])
+          if (detail && (use === USE.FIELD || use === USE.PADDY)) {
+            const angle = city.fieldAngle?.[index] ?? 0
+            const across = -Math.sin(angle) * x + Math.cos(angle) * z
+            const strip = Math.sin(across * (Math.PI * 2 / (use === USE.FIELD ? 14 : 24)))
+            const delta = strip > 0.75 ? -9 : strip < -0.5 ? 5 : 0
+            color[0] = Math.max(0, Math.min(255, color[0] + delta))
+            color[1] = Math.max(0, Math.min(255, color[1] + delta))
+            color[2] = Math.max(0, Math.min(255, color[2] + delta * 0.7))
+          }
           break
+        case 'price': {
+          const value = detail
+            ? (city.landPrice ? city.landPrice[index] : 0)
+            : bilinear(prepared.price100, prepared.density100Columns, prepared.density100Cell, x, z)
+          priceColor(value, color)
+          break
+        }
         case 'people': {
           const value = detail
             ? people.residents[index] * (1e6 / (cell * cell))
@@ -269,7 +296,7 @@ const ROOF = {
 export function drawFeatures(ctx, features, layer) {
   if (!features) return
   ctx.lineCap = 'round'
-  const muted = layer === 'people' || layer === 'era'
+  const muted = layer === 'people' || layer === 'era' || layer === 'price'
   ctx.strokeStyle = muted ? 'rgba(255,255,255,0.75)' : '#fbfaf6'
   for (const street of features.streets) {
     ctx.lineWidth = Math.max(0.8, street.width)
@@ -335,6 +362,7 @@ export function describePoint(region, x, z) {
     newtown: city.newtown[index] === 1,
     density: people.residents[index] * (1e6 / (cell * cell)),
     jobs: people.jobs[index] * (1e6 / (cell * cell)),
+    landPrice: city.landPrice ? city.landPrice[index] : 0,
     slope: terrain.slope[index],
     minutes: city.travel[(column >> 1) + (row >> 1) * grid40],
   }

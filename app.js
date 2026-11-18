@@ -1,10 +1,10 @@
-import { initScene } from "./scene.js?v=10";
+import { initScene } from "./scene.js?v=11";
 import { connectPresence } from "./presence.js?v=7";
 import { createVoice } from "./voice.js";
 import { createStudio } from "./studio.js?v=8";
 import { FINISHES, ITEMS, ITEM_GROUPS, OPENINGS, ROOM_COLORS, ROOM_LABELS, STYLE_FLOORS, STYLE_LABELS, WALL_DECOR } from "./world/design.js";
 import { TOOLS, WALL_KINDS } from "./world/editor.js";
-import { createRegionApp } from "./region-app.js?v=2";
+import { createRegionApp } from "./region-app.js?v=3";
 import { connectionMessage, TOWN_TIMEOUT, withDeadline } from "./town-connection.js";
 
 const $ = (id) => document.getElementById(id);
@@ -27,8 +27,24 @@ const initialTown = {
 const initialMe = { id: "local", name: "あなた", ...plaza, y: 0, coins: 500, owned: [] };
 const inviteFromUrl = new URL(location.href).searchParams.get("join") ?? "";
 const sessionKey = "machi-no-tonari:session";
+const nameKey = "machi-no-tonari:name";
 const qualityKey = "machi-no-tonari:quality";
 const settingsKey = "machi-no-tonari:settings";
+const savedName = () => state?.me?.name || localStorage.getItem(nameKey) || "";
+function savedRegionCode() {
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key?.startsWith("machi-no-tonari:region:")) {
+        const code = localStorage.getItem(key)?.trim().toUpperCase();
+        if (code && /^[A-Z2-9]{8}$/.test(code)) return code;
+      }
+    }
+  } catch {
+    // Storage may be unavailable in private browsing.
+  }
+  return "";
+}
 const narrow = () => matchMedia("(max-width: 760px)").matches;
 let token = localStorage.getItem(sessionKey) ?? "";
 let state = null;
@@ -393,6 +409,7 @@ async function join(name, code, signal) {
   token = result.token;
   localStorage.setItem(sessionKey, token);
   localStorage.setItem(`${sessionKey}:${result.state.code}`, token);
+  if (result.state.me?.name) localStorage.setItem(nameKey, result.state.me.name);
   accept(result.state);
   startPresence();
   openPanel("guide", !narrow());
@@ -482,12 +499,11 @@ function makeScene() {
   }
 }
 
-const editing = () => !place && !designing() && (activeTab === "edit" || Boolean(building));
+const editing = () => !place && !designing() && Boolean(building);
 
-// The camera the game wants right now: editing looks down on the town, trying clothes moves in close.
+// The camera the game wants right now: trying clothes moves in close; building keeps the view round the resident.
 function wantedCamera() {
   if (preview && (inShop() || activeTab === "shop")) return "close";
-  if (editing()) return "overview";
   return viewMode;
 }
 
@@ -587,7 +603,7 @@ function update() {
     player: avatar(me, 0),
     players: (state?.players ?? []).filter((player) => player.id !== me.id && player.online)
       .map((player, index) => avatar(player, index + 1)),
-    town: regionApp.sceneTown(town()),
+    town: regionApp.sceneTown(state?.town ?? null),
     // Which doors stand open and which locks were left unlocked, house by house.
     doors: state?.doors ?? {},
     houses: (state?.houses ?? []).map((house) => ({ ...house, label: houseTitle(house) })),
@@ -595,13 +611,13 @@ function update() {
     selected: selection?.from ?? null,
     placing: building ? { w: building.w, d: building.d } : null,
     design: designDraft,
-    transit: transitPreview && !town().region,
+    transit: false,
   });
   scene?.setCamera(wantedCamera());
   scene?.setPreview(preview ? { outfit: preview, color: preview.color } : null);
   setText("balance", fmt(me.coins));
   setText("location-label", designing() ? "設計中" : home ? `${houseTitle(home)} ${place.level + 1}階`
-    : inShop() ? "服屋 ひだまり" : place?.kind === "cafe" ? "こもれび喫茶" : place?.kind === "station" ? place.label ?? "駅" : regionApp.placeName(position ?? me) ?? "ひだまり通り");
+    : inShop() ? "服屋 ひだまり" : place?.kind === "cafe" ? "こもれび喫茶" : place?.kind === "station" ? place.label ?? "駅" : regionApp.placeName(position ?? me) ?? "地域の街");
   setText("room-status", state?.code ? "招待" : "接続");
   drawViewBar();
   drawActionBar();
@@ -622,6 +638,11 @@ function drawMap() {
   if (!map) return;
   const ctx = map.getContext("2d");
   if (!ctx) return;
+  if (!state?.town) {
+    ctx.fillStyle = "#a9bec6";
+    ctx.fillRect(0, 0, map.width, map.height);
+    return;
+  }
   const layout = town();
   // A region town has its own map: the land round the player (see region-app.js).
   if (regionApp.drawMap(ctx, map, layout, position ?? current())) return;
@@ -721,10 +742,12 @@ function renderPanel() {
 }
 
 function guide() {
+  const hasDistrict = (state?.town?.districts ?? []).some((d) => d.mine || d.canEdit);
   const goals = [
+    [hasDistrict, "地区を管理する", "「地区」で丁目を選んで、自分の地区にしよう。", "open-district", "district", ""],
+    [(state?.houses ?? []).some((h) => h.ownerId === current().id), "はじめての家", "自分の地区の空き地を選んで、家を建てよう。", "open-homes", "home", ""],
     [current().owned.length > 0, "服屋をのぞく", "試着して、好きな服を買ってみよう。", "open-shop", "shop", "warm"],
-    [(state?.houses ?? []).some((h) => h.ownerId === current().id), "はじめての家", "空いている場所を選んで、自分の家を建てよう。", "open-homes", "home", ""],
-    [state?.players.length > 1, "友達を呼ぶ", "招待リンクで同じ街に集まろう。", "room", "users", "sky"],
+    [state?.players.length > 1, "友達を呼ぶ", "招待リンクで同じ地域の街に集まろう。", "room", "users", "sky"],
   ];
   const card = ([done, title, help, act, symbol, tone]) =>
     `<button type="button" class="goal" data-action="${act}">
@@ -929,23 +952,17 @@ function settingsPanel() {
       <div class="section-title"><span>画質</span></div>
       <div class="segmented" role="group" aria-label="画質" style="display:grid;grid-template-columns:repeat(3,1fr)">${Object.entries(qualityNames).map(([value, label]) =>
         `<button type="button" class="seg" data-action="quality" data-id="${value}" aria-pressed="${scene?.quality() === value}">${label}</button>`).join("")}</div>
-      <p class="note">「きれい」は海や窓に景色が映り、影が細かくなります。動きが重いときは「軽い」にしてください。</p>
+      <p class="note">「きれい」は窓に景色が映り、影や遠くの地形・建物まで細かくなります。動きが重いときは「軽い」にしてください。</p>
     </section>
     <section class="section">
       <div class="section-title"><span>${icon("volume")} 音</span></div>
       <label class="check"><input type="checkbox" data-setting="sound" ${settings.sound ? "checked" : ""}> 効果音（エレベーターの到着音・発車メロディなど）</label>
-      <label class="check"><input type="checkbox" data-setting="voice" ${settings.voice ? "checked" : ""}> 自動放送（エレベーターや車内の案内を読み上げる）</label>
-    </section>
-    <section class="section">
-      <div class="section-title"><span>${icon("train")} モノレール（試運転）</span></div>
-      <p class="note">跨座式モノレールのベースを、この画面だけで走らせて試せます。街には配置・保存されず、ほかの人の画面にも出ません。</p>
-      ${btn(transitPreview ? "試運転をやめる" : "試運転を始める", "toggle-transit", transitPreview ? "danger block" : "soft block", `aria-pressed="${transitPreview}"`)}
-      ${transitPreview ? '<p class="note">建物のない土地が横に続くいちばん長い列の両端に、仮の駅（4×1マス）と線路が建ちます。改札を通って3階のホームへ上がり、ホームドアが開いている間に乗ってください。</p>' : ""}
+      <label class="check"><input type="checkbox" data-setting="voice" ${settings.voice ? "checked" : ""}> 自動放送（駅・車内・エレベーターの案内）</label>
     </section>
     <section class="section">
       <div class="section-title"><span>${icon("help")} 操作方法</span></div>
       <dl class="keys">${keys.map(([caps, label]) => `<dt>${caps.map((cap) => `<kbd>${cap}</kbd>`).join("")}</dt><dd>${label}</dd>`).join("")}</dl>
-      <p class="note">地面をクリックするとそこへ歩きます。スマホでは左下のスティックで歩き、画面をなぞって見回します。${vrReady ? "VRでは左スティックで歩き、右スティックで向きを変え、A・B・X・Yボタンで手元メニューを開きます。" : "VRゴーグルのブラウザーで開くと「VR」ボタンが出ます。"}</p>
+      <p class="note">地面をクリックするとそこへ歩きます。駅の階段からホームへ上がると、路線図に沿って走るモノレールに乗れます。スマホでは左下のスティックで歩き、画面をなぞって見回します。${vrReady ? "VRでは左スティックで歩き、右スティックで向きを変え、A・B・X・Yボタンで手元メニューを開きます。" : "VRゴーグルのブラウザーで開くと「VR」ボタンが出ます。"}</p>
     </section>`;
 }
 
@@ -1044,33 +1061,35 @@ function openRoomDialog() {
   const code = state?.code ?? "";
   const url = new URL(location.href);
   if (code) url.searchParams.set("join", code);
+  const seed = state?.town?.region?.seed;
+  const mapHref = seed !== undefined ? `./region.html#seed=${encodeURIComponent(seed)}` : "./region.html";
   if (!state) {
-    // First visit or a lost session: choose the name everyone will see before entering a town.
+    const prefillCode = inviteFromUrl || token.split(".")[0] || savedRegionCode();
     showDialog(`<h2>まちのとなりへようこそ</h2>
-      <p>街のみんなに表示される名前を決めてください。</p>
+      <p>20km四方の地域の地図から地形と路線を生成して3Dの街をつくるか、招待コードで街に入ります。</p>
       <form data-form="join">
-        <label class="field">表示名<input name="name" maxlength="24" required autofocus placeholder="あなたの名前"></label>
-        <label class="field">招待コード<input name="code" maxlength="20" value="${escape(inviteFromUrl || token.split(".")[0])}" placeholder="空欄なら新しい街をつくります"></label>
+        <label class="field">表示名<input name="name" maxlength="24" required autofocus value="${escape(savedName())}" placeholder="あなたの名前"></label>
+        <button class="btn primary block" type="submit" value="map">${icon("district")}<span>地域の地図から街をつくる・選ぶ</span></button>
+        <hr style="border:0;border-top:1px solid var(--line, rgba(29,42,51,0.12));margin:14px 0">
+        <label class="field">招待コードで街に入る<input name="code" maxlength="20" value="${escape(prefillCode)}" placeholder="8文字の招待コード"></label>
         <p data-join-status role="status" hidden></p>
-        <button class="btn primary block" type="submit" value="start">はじめる</button>
-      </form>
-      <a class="btn soft block" href="./region.html" style="margin-top:10px">地域の地図から街をつくる</a>`);
+        <button class="btn soft block" type="submit" value="join">招待コードの街に入る</button>
+      </form>`);
     return;
   }
   showDialog(`<h2>友達を街に呼ぶ</h2>
     ${code ? `<div class="invite-card">
-      <small>この街の招待コード</small><strong>${escape(code)}</strong>
+      <small>この街の招待コード${seed !== undefined ? `（シード ${escape(seed)}）` : ""}</small><strong>${escape(code)}</strong>
       ${btn("招待リンクをコピー", "copy-invite", "primary")}
       <input id="invite-url" aria-label="招待リンク" readonly value="${escape(url.href)}">
     </div>` : ""}
     <form data-form="join" style="margin-top:14px">
       <label class="field">表示名<input name="name" maxlength="24" required value="${escape(state?.me.name ?? "")}" placeholder="あなたの名前"></label>
-      <label class="field">招待コード<input name="code" maxlength="20" value="${escape(inviteFromUrl)}" placeholder="友達の招待コード"></label>
+      <label class="field">別の街の招待コード<input name="code" maxlength="20" value="${escape(inviteFromUrl)}" placeholder="友達の招待コード"></label>
       <p data-join-status role="status" hidden></p>
-      <div class="row wrap"><button class="btn primary grow" type="submit" value="join">街に参加する</button>
-        <button class="btn ghost grow" type="submit" value="new">新しい街を作る</button></div>
+      <div class="row wrap"><button class="btn primary grow" type="submit" value="join">招待コードの街に参加する</button></div>
     </form>
-    <a class="btn soft block" href="./region.html" style="margin-top:10px">地域の地図から街をつくる</a>`);
+    <a class="btn soft block" href="${escape(mapHref)}" style="margin-top:10px">${icon("district")}<span>地域の地図から街をつくる・選ぶ</span></a>`);
 }
 
 function openNameDialog() {
@@ -1259,9 +1278,8 @@ function vrMenu() {
     sections.push({ label: "家を設計する", columns: 2, buttons: designs.map((house) => ({ label: `${houseTitle(house)}を設計`, action: "design-home", data: { id: house.id } })) });
   }
   sections.push({
-    label: "そのほか", columns: 3, buttons: [
+    label: "そのほか", columns: 2, buttons: [
       { label: voice.enabled() ? "マイクを切る" : "マイクを入れる", action: "mic", active: voice.enabled() },
-      { label: transitPreview ? "モノレール試運転をやめる" : "モノレール試運転", action: "toggle-transit", active: transitPreview },
       { label: "VRを終える", action: "vr" },
     ],
   });
@@ -1672,6 +1690,7 @@ const handlers = {
   "open-shop": openShop,
   "leave-shop": () => { scene?.visit("shop"); },
   "open-homes": () => openPanel("home"),
+  "open-district": () => openPanel("district"),
   "home-detail": ({ id }) => { selectedHouse = selectedHouse === id ? null : id; planFloor = 0; update(); },
   "design-home": ({ id }) => openStudio(id),
   "cancel-build": () => { building = null; update(); },
@@ -1908,14 +1927,20 @@ function joinStatus(form, text) {
 
 async function submitJoin(form, data, intent) {
   if (joinAttempt) return;
-  const code = String(data.get("code") ?? "").trim().toUpperCase();
-  const creating = intent === "new" || ((intent === "start" || !intent && !state) && !code);
   const name = String(data.get("name") ?? "").trim();
-  if (!name || (!creating && !code)) {
-    joinStatus(form, !name ? "表示名を入力してください。" : "招待コードを入力してください。");
+  const code = String(data.get("code") ?? "").trim().toUpperCase();
+  if (name) {
+    try { localStorage.setItem(nameKey, name); } catch { /* ignore */ }
+  }
+  if (intent === "map" || (!code && intent !== "join")) {
+    location.href = "./region.html";
     return;
   }
-  if (!creating && token && state?.code === code) {
+  if (!name || !code) {
+    joinStatus(form, !name ? "表示名を入力してください。" : "招待コードを入力するか、「地域の地図から街をつくる・選ぶ」を押してください。");
+    return;
+  }
+  if (token && state?.code === code) {
     $("dialog").close();
     return;
   }
@@ -1926,7 +1951,7 @@ async function submitJoin(form, data, intent) {
   for (const button of buttons) button.disabled = true;
   joinStatus(form, "街に接続しています…");
   try {
-    await withDeadline((signal) => join(name, creating ? "" : code, signal), TOWN_TIMEOUT, attempt.signal);
+    await withDeadline((signal) => join(name, code, signal), TOWN_TIMEOUT, attempt.signal);
   } catch (error) {
     if (!attempt.signal.aborted) joinStatus(form, connectionMessage(error));
     return;
@@ -1935,7 +1960,7 @@ async function submitJoin(form, data, intent) {
     for (const button of buttons) button.disabled = false;
   }
   if (form.isConnected && $("dialog").open) $("dialog").close();
-  notify(creating ? "新しい街を作りました。" : "街に参加しました。");
+  notify("街に参加しました。");
   // Restoring a session can keep the previous name. A rename cannot delay entry.
   if (current().name !== name) {
     const generation = sessionGeneration;
@@ -1954,7 +1979,9 @@ document.addEventListener("submit", (event) => {
     run(() => submitJoin(event.target, data, event.submitter?.value));
   } else if (mode === "rename") {
     run(async () => {
-      await action("rename", { name: String(data.get("name") ?? "").trim() });
+      const name = String(data.get("name") ?? "").trim();
+      await action("rename", { name });
+      if (name) try { localStorage.setItem(nameKey, name); } catch { /* ignore */ }
       $("dialog").close();
       notify("表示名を変更しました。");
     });

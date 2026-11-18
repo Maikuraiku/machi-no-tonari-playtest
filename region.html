@@ -9,7 +9,7 @@
   <meta name="theme-color" content="#f6f7f3">
   <meta name="description" content="20km四方の世田谷風の土地を生成し、整備・人口・人の流れ・鉄道の路線計画をシミュレーションする地図。">
   <title>地域シミュレーション｜まちのとなり</title>
-  <link rel="stylesheet" href="./region/map.css?v=stations-20261118">
+  <link rel="stylesheet" href="./region/map.css?v=boarding-20261119">
 </head>
 <body>
   <main class="region">
@@ -43,6 +43,8 @@
         </div>
       </header>
 
+      <section class="block" id="district" hidden></section>
+
       <section class="block">
         <h2>表示する内容</h2>
         <div class="layers" id="layers" role="radiogroup" aria-label="地図の色分け"></div>
@@ -61,8 +63,6 @@
           <label><input type="checkbox" data-show="districts" checked> 地区（町・丁目）</label>
         </div>
       </section>
-
-      <section class="block" id="district" hidden></section>
 
       <section class="block" id="summary" hidden></section>
       <section class="block" id="eras" hidden></section>
@@ -84,6 +84,6 @@
       </footer>
     </aside>
   </main>
-  <script type="module" src="./region/map.bundle.js?v=stations-20261118" onerror="var s=document.getElementById('status');s.hidden=false;s.classList.add('error');s.textContent='地図の部品を読み込めませんでした。ページを読み込み直してください。'"></script>
+  <script type="module" src="./region/map.bundle.js?v=boarding-20261119" onerror="var s=document.getElementById('status');s.hidden=false;s.classList.add('error');s.textContent='地図の部品を読み込めませんでした。ページを読み込み直してください。'"></script>
 </body>
 </html>

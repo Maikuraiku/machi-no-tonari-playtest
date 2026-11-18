@@ -11,13 +11,13 @@
 // and the ground height a house is built with, the minimap of the land round the player, the claim
 // a link from the region map asks for on arrival (?district=ID&claim=built|bare), and, for a town
 // made before districts existed, sending the division map the server checks claims against.
-import { regionClient } from './world/region-client.js?v=online-1794980046418'
-import { STEP, decodeLine } from './region/game-pack.js?v=online-1794980046418'
-import { CELL, base64Of, bytesOf, claimIndex, lotRights } from './region/district-lookup.js?v=online-1794980046418'
+import { regionClient } from './world/region-client.js'
+import { STEP, decodeLine } from './region/game-pack.js'
+import { CELL, base64Of, bytesOf, claimIndex, lotRights } from './region/district-lookup.js'
 import {
   MAX_CLAIMS, MAX_EDITORS, TILE, arrivalOf, blockedTile, districtFacts, lotGround, lotPoints, mapAddress, minimapLayers,
   minimapView, routeOnMap, withoutArrival,
-} from './region/district-panel.js?v=online-1794980046418'
+} from './region/district-panel.js'
 
 // The ground the minimap shows across its width in a region town, in metres.
 const MAP_METRES = 1000
@@ -269,10 +269,11 @@ export function createRegionApp({
     history.replaceState(null, '', url)
   }
 
-  // The town as the 3D view gets it: nothing while the region is being made, then the town with
-  // its stored lines.
+  // The town as the 3D view gets it: nothing before a town is joined or while the region is being
+  // made, then the town with its stored lines.
   function sceneTown(town) {
-    if (!town?.region) return town
+    if (!town) return null
+    if (!town.region) return town
     const status = regionClient.status
     if (status.seed !== town.region.seed || status.phase !== 'ready') return null
     const lines = linesOf(town)
@@ -559,7 +560,8 @@ export function createRegionApp({
   function ownCard(claim) {
     const name = escape(nameOf(claim.id, claim))
     const editors = Array.isArray(claim.editorIds) ? claim.editorIds : []
-    const residents = (state()?.players ?? []).filter((player) => player.id !== claim.ownerId)
+    const currentId = me()
+    const residents = (state()?.players ?? []).filter((player) => player.id !== claim.ownerId && player.id !== currentId)
     const switching = busy.has(`mode:${claim.id}`)
     const rows = residents.map((player) => {
       const allowed = editors.includes(player.id)
@@ -684,6 +686,7 @@ export function createRegionApp({
       const mine = claims.filter((claim) => claim.mine)
       const helping = claims.filter((claim) => !claim.mine && claim.canEdit)
       const others = claims.filter((claim) => !claim.mine && !claim.canEdit)
+      const peers = isHost() ? (snapshot.players ?? []).filter((p) => p.id !== me()) : []
       return `<p class="lead">丁目を自分の地区にすると、そこに家を建てられます。地面をクリックすると、その丁目を選べます。</p>
         ${focusSection(snapshot, here)}
         ${mine.length ? `<section class="section"><div class="section-title"><span>あなたの地区</span><span>${mine.length}／${MAX_CLAIMS}</span></div>
@@ -692,6 +695,13 @@ export function createRegionApp({
           <div class="list">${helping.map(otherRow).join('')}</div></section>` : ''}
         ${others.length ? `<section class="section"><div class="section-title"><span>ほかの人の地区</span><span>${others.length}</span></div>
           <div class="list">${others.map(otherRow).join('')}</div></section>` : ''}
+        ${peers.length ? `<section class="section"><div class="section-title"><span>街の共同編集者</span></div>
+          <div class="list">${peers.map((p) => {
+            const allowed = (snapshot.editorIds ?? []).includes(p.id)
+            return `<div class="list-row"><span>${escape(p.name)}</span><button type="button" class="btn ghost small"
+              data-action="editor-role" data-id="${escape(p.id)}" data-allowed="${!allowed}">${allowed ? '権限を外す' : '編集を許可'}</button></div>`
+          }).join('')}</div></section>` : ''}
+        <a class="btn soft block" href="./region.html#seed=${escape(town.region.seed)}" target="_blank" rel="noopener">${icon('district')}<span>地域の地図をひらく（シード ${escape(town.region.seed)}）</span></a>
         <p class="note">建物ありは地域の建物をそのまま残し、家を建てると下の建物と入れ替わります。建物なしは地形と道路と線路だけになります。地区は1人${MAX_CLAIMS}つまで、一緒に作る人は1つの地区に${MAX_EDITORS}人まで決められます。</p>`
     },
 

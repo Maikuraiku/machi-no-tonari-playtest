@@ -13,9 +13,9 @@ const ROAD = { COLLECTOR: 2, ARTERIAL: 3, TRUNK: 4 }
 // What the ground looks like under each use: gardens and paving among houses, fields, woods.
 const GROUND = {
   [USE.WATER]: '#5f8fa8', [USE.RIVERBED]: '#93ad6c', [USE.FOREST]: '#4f6b3a', [USE.GREEN]: '#6d8a4a',
-  [USE.FIELD]: '#a08a5c', [USE.PADDY]: '#8fa25a', [USE.PARK]: '#79984f', [USE.LOW]: '#8f9a72',
-  [USE.DENSE]: '#9a9584', [USE.MID]: '#9a9a8c', [USE.HIGH]: '#a2a29a', [USE.COMMERCIAL]: '#a6a39b',
-  [USE.INDUSTRIAL]: '#9e9c94', [USE.PUBLIC]: '#b39f7c',
+  [USE.FIELD]: '#a08a5c', [USE.PADDY]: '#8fa25a', [USE.PARK]: '#79984f', [USE.LOW]: '#788f59',
+  [USE.DENSE]: '#859164', [USE.MID]: '#86906a', [USE.HIGH]: '#8e9278', [USE.COMMERCIAL]: '#989482',
+  [USE.INDUSTRIAL]: '#929082', [USE.PUBLIC]: '#a6986e',
 }
 const GROUND_LINEAR = []
 for (const [use, colour] of Object.entries(GROUND)) GROUND_LINEAR[use] = new THREE.Color(colour)
@@ -23,15 +23,16 @@ for (const [use, colour] of Object.entries(GROUND)) GROUND_LINEAR[use] = new THR
 // Storey heights (m) and the materials of walls and roofs by use.
 const STOREY = { [USE.LOW]: 2.9, [USE.DENSE]: 2.8, [USE.MID]: 2.95, [USE.HIGH]: 2.95, [USE.COMMERCIAL]: 3.4, [USE.INDUSTRIAL]: 5.5, [USE.PUBLIC]: 3.8 }
 const WALLS = {
-  [USE.LOW]: [['siding', '#f1ece2'], ['mortar', '#e9e2d3'], ['siding', '#d9d5cc'], ['mortar', '#cfc5b3'], ['siding', '#b8b2a6']],
-  [USE.DENSE]: [['mortar', '#ddd5c4'], ['planks', '#8a7258'], ['mortar', '#c9c0ae'], ['siding', '#cfcac0']],
-  [USE.MID]: [['concrete', '#e3e0d8'], ['tile', '#d8d2c6'], ['mortar', '#ece7dc']],
-  [USE.HIGH]: [['concrete', '#dcdad4'], ['tile', '#cfccc4']],
-  [USE.COMMERCIAL]: [['tile', '#d6d0c8'], ['concrete', '#cfcbc4'], ['mortar', '#e2dbd0']],
-  [USE.INDUSTRIAL]: [['metalPanel', '#b9c0c6'], ['metalPanel', '#a7b0b5']],
-  [USE.PUBLIC]: [['concrete', '#eeece6']],
+  [USE.LOW]: [['siding', '#f1ece2'], ['mortar', '#e9e2d3'], ['siding', '#d9d5cc'], ['mortar', '#cfc5b3'], ['siding', '#b8b2a6'], ['brickWhite', '#eeeae2']],
+  [USE.DENSE]: [['mortar', '#ddd5c4'], ['planks', '#8a7258'], ['mortar', '#c9c0ae'], ['siding', '#cfcac0'], ['stucco', '#e4ddd0']],
+  [USE.MID]: [['concrete', '#e3e0d8'], ['tile', '#d8d2c6'], ['mortar', '#ece7dc'], ['brick', '#c78a72']],
+  [USE.HIGH]: [['concrete', '#dcdad4'], ['tile', '#cfccc4'], ['brickWhite', '#e6e3dc']],
+  [USE.COMMERCIAL]: [['tile', '#d6d0c8'], ['concrete', '#cfcbc4'], ['mortar', '#e2dbd0'], ['brick', '#b8765c']],
+  [USE.INDUSTRIAL]: [['metalPanel', '#b9c0c6'], ['metalPanel', '#a7b0b5'], ['concrete', '#c4c2ba']],
+  [USE.PUBLIC]: [['concrete', '#eeece6'], ['tile', '#e5e1d6']],
 }
-const ROOFS = [['kawara', '#6e7378'], ['kawara', '#4f565c'], ['slate', '#6a5446'], ['slate', '#4d5a66'], ['roofMetal', '#7c6a5b']]
+const ROOFS = [['kawara', '#5c636a'], ['kawara', '#474e54'], ['slate', '#634f42'], ['slate', '#495662'], ['roofMetal', '#746354'], ['roofMetal', '#56646e']]
+const AWNINGS = ['#9c3d32', '#2c5e4f', '#355678', '#b86b28', '#52483e']
 
 const clamp = (value, low, high) => Math.min(high, Math.max(low, value))
 const frameBudget = 5
@@ -109,9 +110,13 @@ export function createRegionScene() {
         low = Math.min(low, y)
         high = Math.max(high, y)
         const colour = water[k] ? GROUND_LINEAR[USE.WATER] : GROUND_LINEAR[use[k]] ?? GROUND_LINEAR[USE.LOW]
-        colours[k * 3] = colour.r
-        colours[k * 3 + 1] = colour.g
-        colours[k * 3 + 2] = colour.b
+        // Subtle spatial variation and slope darkening so hillsides, fields and parks have depth.
+        const wx = win.box.x0 + i * step
+        const wz = win.box.z0 + j * step
+        const grain = coarse ? 1 : 0.96 + 0.08 * Math.sin(wx * 0.07 + wz * 0.05) * Math.cos(wx * 0.04 - wz * 0.08)
+        colours[k * 3] = Math.min(1, colour.r * grain)
+        colours[k * 3 + 1] = Math.min(1, colour.g * grain)
+        colours[k * 3 + 2] = Math.min(1, colour.b * grain)
         if (normals) {
           const west = Math.max(0, i - 1)
           const east = Math.min(width - 1, i + 1)
@@ -185,19 +190,27 @@ export function createRegionScene() {
   function* buildRoads(win, origin, datum) {
     const batch = new Batch()
     const asphalt = material('asphalt', '#ffffff')
-    const pavement = material('sidewalk', '#ffffff')
-    const street = material('asphalt', '#d4d4d0')
+    const pavement = material('sidewalk', '#e2e0d8')
+    const street = material('asphalt', '#c4c4be')
+    const gutter = material('concrete', '#d0cec6')
+    const linePaint = material('#e6e3d6', '#ffffff', { roughness: 0.7 })
+    const fineStep = Math.min(2, win.step || 2)
     for (const road of win.roads) {
       // Pavements of 3.5 m beside an arterial or trunk road, 2.5 m beside a collector.
       const walk = road.kind >= ROAD.ARTERIAL ? 3.5 : 2.5
       const share = clamp(1 - (2 * walk) / road.width, 0.2, 1)
-      ribbon(batch, asphalt, win, road.points, road.width, origin, datum, { lift: 0.08, side0: -share, side1: share })
-      ribbon(batch, pavement, win, road.points, road.width, origin, datum, { lift: 0.18, side0: -1, side1: -share })
-      ribbon(batch, pavement, win, road.points, road.width, origin, datum, { lift: 0.18, side0: share, side1: 1 })
+      const mark = clamp(0.18 / road.width, 0.01, 0.06)
+      ribbon(batch, asphalt, win, road.points, road.width, origin, datum, { lift: 0.12, side0: -share, side1: share, step: fineStep })
+      ribbon(batch, pavement, win, road.points, road.width, origin, datum, { lift: 0.22, side0: -1, side1: -share, step: fineStep })
+      ribbon(batch, pavement, win, road.points, road.width, origin, datum, { lift: 0.22, side0: share, side1: 1, step: fineStep })
+      ribbon(batch, linePaint, win, road.points, road.width, origin, datum, { lift: 0.14, side0: -mark, side1: mark, step: fineStep })
       yield
     }
     for (const lane of win.streets) {
-      ribbon(batch, street, win, lane.points, lane.width, origin, datum, { lift: 0.06, step: 4 })
+      const edge = clamp(1 - (2 * 0.35) / Math.max(lane.width, 2.4), 0.65, 0.9)
+      ribbon(batch, street, win, lane.points, lane.width, origin, datum, { lift: 0.09, side0: -edge, side1: edge, step: fineStep })
+      ribbon(batch, gutter, win, lane.points, lane.width, origin, datum, { lift: 0.1, side0: -1, side1: -edge, step: fineStep })
+      ribbon(batch, gutter, win, lane.points, lane.width, origin, datum, { lift: 0.1, side0: edge, side1: 1, step: fineStep })
       yield
     }
     const node = new THREE.Group()
@@ -237,6 +250,16 @@ export function createRegionScene() {
   function* buildBuildings(win, origin, datum) {
     const batch = new Batch()
     const solids = []
+    const plinthMat = material('concrete', '#b9b6ae')
+    const roofConcrete = material('concrete', '#c6c3bc')
+    const copingMat = material('concrete', '#dfdcd4')
+    const glassDark = material('#324554', '#ffffff', { roughness: 0.16, metalness: 0.72 })
+    const glassShop = material('#4a5f6d', '#ffffff', { roughness: 0.14, metalness: 0.55 })
+    const frameDark = material('#3d4247', '#ffffff', { roughness: 0.45, metalness: 0.5 })
+    const balconyMat = material('concrete', '#dcd9d0')
+    const woodDoor = material('wood', '#7d593d')
+    const v = (x, y, z) => new THREE.Vector3(x, y, z)
+
     for (const building of win.buildings) {
       yield
       const c = building.corners
@@ -249,27 +272,135 @@ export function createRegionScene() {
         high = Math.max(high, h)
       }
       const storey = STOREY[building.use] ?? 2.9
-      const base = low - 0.3
-      const top = high + 0.4 + building.floors * storey
+      const base = low - 0.35
+      const plinthTop = high + 0.38
+      const top = plinthTop + building.floors * storey
+      const tone = building.tone ?? 0.5
+      const designBits = Math.floor(tone * 4096)
       const wallChoices = WALLS[building.use] ?? WALLS[USE.LOW]
-      const [wallName, wallTint] = wallChoices[Math.floor(building.tone * wallChoices.length) % wallChoices.length]
+      const [wallName, wallTint] = wallChoices[Math.floor(tone * wallChoices.length) % wallChoices.length]
       const wall = material(wallName, wallTint)
       const ring = corners.map(([x, z]) => [x - origin[0], z - origin[1]])
-      // Walls, each facing out of the footprint.
       const cx = (ring[0][0] + ring[1][0] + ring[2][0] + ring[3][0]) / 4
       const cz = (ring[0][1] + ring[1][1] + ring[2][1] + ring[3][1]) / 4
+      const house = (building.use === USE.LOW || building.use === USE.DENSE) && building.floors <= 3
+
+      // Concrete foundation plinth (基礎・ひな壇の土台) from the lowest corner up to plinthTop,
+      // and the main building walls above it.
       for (let k = 0; k < 4; k++) {
         const [ax, az] = ring[k]
         const [bx, bz] = ring[(k + 1) % 4]
-        const facing = new THREE.Vector3((ax + bx) / 2 - cx, 0, (az + bz) / 2 - cz)
-        batch.quad(wall, new THREE.Vector3(ax, base, az), new THREE.Vector3(bx, base, bz), new THREE.Vector3(bx, top, bz), new THREE.Vector3(ax, top, az), facing)
+        const edgeDx = bx - ax
+        const edgeDz = bz - az
+        const edgeLen = Math.hypot(edgeDx, edgeDz) || 1
+        const ux = edgeDx / edgeLen
+        const uz = edgeDz / edgeLen
+        let nx = (ax + bx) / 2 - cx
+        let nz = (az + bz) / 2 - cz
+        const nLen = Math.hypot(nx, nz) || 1
+        nx /= nLen
+        nz /= nLen
+        const facing = v(nx, 0, nz)
+
+        batch.quad(plinthMat, v(ax, base, az), v(bx, base, bz), v(bx, plinthTop, bz), v(ax, plinthTop, az), facing)
+        batch.quad(wall, v(ax, plinthTop, az), v(bx, plinthTop, bz), v(bx, top, bz), v(ax, top, az), facing)
+
+        // Architectural façade details: windows, doors, shopfronts, and balconies.
+        const outX = nx * 0.045
+        const outZ = nz * 0.045
+        const panelQuad = (mat, s0, s1, y0, y1, push = 0.045) => {
+          const px = nx * push
+          const pz = nz * push
+          batch.quad(mat,
+            v(ax + ux * s0 + px, y0, az + uz * s0 + pz),
+            v(ax + ux * s1 + px, y0, az + uz * s1 + pz),
+            v(ax + ux * s1 + px, y1, az + uz * s1 + pz),
+            v(ax + ux * s0 + px, y1, az + uz * s0 + pz),
+            facing)
+        }
+
+        // Edge 0 is the street frontage in streets.js; edge 2 is the back/south side.
+        if (house) {
+          if (k === 0 && edgeLen >= 4.2) {
+            // Front entrance door and ground-floor window.
+            const doorS = Math.min(edgeLen - 1.4, Math.max(0.7, edgeLen * (0.28 + (designBits & 3) * 0.1)))
+            panelQuad(woodDoor, doorS, doorS + 0.9, plinthTop, plinthTop + 2.05, 0.05)
+            // Small porch canopy above the entrance door.
+            panelQuad(frameDark, doorS - 0.15, doorS + 1.05, plinthTop + 2.08, plinthTop + 2.2, 0.18)
+            if (edgeLen >= 6.2) {
+              const winS = doorS > edgeLen * 0.45 ? 0.9 : Math.min(edgeLen - 2.3, doorS + 1.6)
+              panelQuad(glassDark, winS, winS + 1.4, plinthTop + 0.85, plinthTop + 2.0, 0.04)
+            }
+          }
+          // Upper-floor windows along front and back walls.
+          if ((k === 0 || k === 2) && edgeLen >= 4.0) {
+            const bays = Math.max(1, Math.min(3, Math.floor(edgeLen / 3.2)))
+            const baySpan = edgeLen / bays
+            for (let f = k === 0 ? 1 : 0; f < building.floors; f++) {
+              const y0 = plinthTop + f * storey + 0.85
+              const y1 = y0 + 1.15
+              for (let b = 0; b < bays; b++) {
+                const mid = (b + 0.5) * baySpan
+                panelQuad(glassDark, mid - 0.65, mid + 0.65, y0, y1, 0.04)
+              }
+            }
+            // Second-floor balcony on the sunny/front side of detached houses.
+            if (k === (designBits & 1 ? 0 : 2) && building.floors >= 2 && edgeLen >= 5.2 && building.use === USE.LOW) {
+              const b0 = edgeLen * 0.22
+              const b1 = edgeLen * 0.78
+              const by = plinthTop + storey
+              panelQuad(balconyMat, b0, b1, by - 0.05, by + 0.95, 0.28)
+            }
+          }
+        } else if (building.use === USE.COMMERCIAL) {
+          // Ground-floor glass storefront and coloured awning on the street frontage.
+          if ((k === 0 || (k === 1 && (designBits & 3) === 0)) && edgeLen >= 4.5) {
+            panelQuad(glassShop, 0.6, edgeLen - 0.6, plinthTop + 0.1, plinthTop + storey - 0.55, 0.04)
+            const awningPaint = material(AWNINGS[(designBits >> 2) % AWNINGS.length], '#ffffff', { roughness: 0.65 })
+            panelQuad(awningPaint, 0.4, edgeLen - 0.4, plinthTop + storey - 0.55, plinthTop + storey - 0.15, 0.22)
+          }
+          // Ribbon windows on upper floors.
+          if (edgeLen >= 4.5) {
+            for (let f = 1; f < building.floors; f++) {
+              const y0 = plinthTop + f * storey + 0.75
+              const y1 = plinthTop + (f + 1) * storey - 0.5
+              panelQuad(glassDark, 0.7, edgeLen - 0.7, y0, y1, 0.04)
+            }
+          }
+        } else if (building.use === USE.MID || building.use === USE.HIGH) {
+          // Residential blocks (danchi / mansions): continuous horizontal balcony bands on the
+          // longer façades, corridor/window bands on the opposite side.
+          if (edgeLen >= 8) {
+            const isLongSide = k === 0 || k === 2
+            for (let f = 0; f < building.floors; f++) {
+              const fy = plinthTop + f * storey
+              if (isLongSide) {
+                panelQuad(glassDark, 0.9, edgeLen - 0.9, fy + 0.45, fy + 2.15, 0.04)
+                if (k === 0 || building.use === USE.HIGH) {
+                  panelQuad(balconyMat, 0.7, edgeLen - 0.7, fy + 0.05, fy + 1.05, 0.24)
+                }
+              }
+            }
+          }
+        } else if (building.use === USE.PUBLIC && edgeLen >= 10) {
+          // School classroom window bands and ground spandrels.
+          for (let f = 0; f < building.floors; f++) {
+            const fy = plinthTop + f * storey
+            panelQuad(glassDark, 1.2, edgeLen - 1.2, fy + 0.9, fy + storey - 0.45, 0.04)
+          }
+        } else if (building.use === USE.INDUSTRIAL && edgeLen >= 8) {
+          // Clerestory windows and loading bay roller shutter on the front.
+          panelQuad(glassDark, 1.2, edgeLen - 1.2, top - 1.6, top - 0.55, 0.04)
+          if (k === 0) panelQuad(frameDark, edgeLen * 0.35, edgeLen * 0.65, plinthTop, plinthTop + 3.6, 0.05)
+        }
       }
-      const house = (building.use === USE.LOW || building.use === USE.DENSE) && building.floors <= 3
+
       if (house) {
-        // A gabled roof: the ridge runs along the longer side, eaves 0.45 m out.
-        const [roofName, roofTint] = ROOFS[Math.floor(building.tone * 7.3 * ROOFS.length) % ROOFS.length]
+        const [roofName, roofTint] = ROOFS[Math.floor(tone * 7.3 * ROOFS.length) % ROOFS.length]
         const roof = material(roofName, roofTint)
-        const long = Math.hypot(ring[1][0] - ring[0][0], ring[1][1] - ring[0][1]) >= Math.hypot(ring[3][0] - ring[0][0], ring[3][1] - ring[0][1])
+        const len01 = Math.hypot(ring[1][0] - ring[0][0], ring[1][1] - ring[0][1])
+        const len03 = Math.hypot(ring[3][0] - ring[0][0], ring[3][1] - ring[0][1])
+        const long = len01 >= len03
         const [p, q, r, s] = long ? ring : [ring[1], ring[2], ring[3], ring[0]]
         const grow = (point, toward, by) => {
           const dx = point[0] - toward[0]
@@ -278,25 +409,58 @@ export function createRegionScene() {
           return [point[0] + dx / l * by, point[1] + dz / l * by]
         }
         const centre = [cx, cz]
-        const [pe, qe, re, se] = [p, q, r, s].map((point) => grow(point, centre, 0.45))
+        const [pe, qe, re, se] = [p, q, r, s].map((point) => grow(point, centre, 0.48))
         const span = Math.hypot(s[0] - p[0], s[1] - p[1])
         const rise = Math.min(2.6, span * 0.28)
         const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]
-        const ridgeA = mid(pe, se)
-        const ridgeB = mid(qe, re)
-        const eave = top - 0.15
-        const v = (point, y) => new THREE.Vector3(point[0], y, point[1])
-        batch.quad(roof, v(pe, eave), v(qe, eave), v(ridgeB, top + rise), v(ridgeA, top + rise), new THREE.Vector3(pe[0] - se[0], 1, pe[1] - se[1]))
-        batch.quad(roof, v(se, eave), v(ridgeA, top + rise), v(ridgeB, top + rise), v(re, eave), new THREE.Vector3(se[0] - pe[0], 1, se[1] - pe[1]))
-        // The gable ends.
-        batch.face(wall, [v(p, top), v(s, top), v(mid(p, s), top + rise)])
-        batch.face(wall, [v(r, top), v(q, top), v(mid(q, r), top + rise)])
-        batch.face(wall, [v(s, top), v(p, top), v(mid(p, s), top + rise)])
-        batch.face(wall, [v(q, top), v(r, top), v(mid(q, r), top + rise)])
+        const eave = top - 0.14
+        const pt = (point, y) => new THREE.Vector3(point[0], y, point[1])
+        const roofStyle = designBits % 5 // 0,1: gable (切妻), 2,3: hip (寄棟), 4: shed (片流れ)
+
+        if (roofStyle === 2 || roofStyle === 3) {
+          // Hip roof (寄棟屋根): ridge is inset from both ends, four sloping faces meet at it.
+          const ridgeA0 = mid(pe, se)
+          const ridgeB0 = mid(qe, re)
+          const rdx = ridgeB0[0] - ridgeA0[0]
+          const rdz = ridgeB0[1] - ridgeA0[1]
+          const rLen = Math.hypot(rdx, rdz) || 1
+          const inset = Math.min(rLen * 0.35, span * 0.45)
+          const ridgeA = [ridgeA0[0] + rdx / rLen * inset, ridgeA0[1] + rdz / rLen * inset]
+          const ridgeB = [ridgeB0[0] - rdx / rLen * inset, ridgeB0[1] - rdz / rLen * inset]
+          batch.quad(roof, pt(pe, eave), pt(qe, eave), pt(ridgeB, top + rise), pt(ridgeA, top + rise), v(pe[0] - se[0], 1, pe[1] - se[1]))
+          batch.quad(roof, pt(se, eave), pt(ridgeA, top + rise), pt(ridgeB, top + rise), pt(re, eave), v(se[0] - pe[0], 1, se[1] - pe[1]))
+          batch.face(roof, [pt(se, eave), pt(pe, eave), pt(ridgeA, top + rise)])
+          batch.face(roof, [pt(pe, eave), pt(se, eave), pt(ridgeA, top + rise)])
+          batch.face(roof, [pt(qe, eave), pt(re, eave), pt(ridgeB, top + rise)])
+          batch.face(roof, [pt(re, eave), pt(qe, eave), pt(ridgeB, top + rise)])
+        } else {
+          // Gable roof (切妻屋根): ridge runs full length with triangular gable end walls.
+          const ridgeA = mid(pe, se)
+          const ridgeB = mid(qe, re)
+          batch.quad(roof, pt(pe, eave), pt(qe, eave), pt(ridgeB, top + rise), pt(ridgeA, top + rise), v(pe[0] - se[0], 1, pe[1] - se[1]))
+          batch.quad(roof, pt(se, eave), pt(ridgeA, top + rise), pt(ridgeB, top + rise), pt(re, eave), v(se[0] - pe[0], 1, se[1] - pe[1]))
+          batch.face(wall, [pt(p, top), pt(s, top), pt(mid(p, s), top + rise)])
+          batch.face(wall, [pt(r, top), pt(q, top), pt(mid(q, r), top + rise)])
+          batch.face(wall, [pt(s, top), pt(p, top), pt(mid(p, s), top + rise)])
+          batch.face(wall, [pt(q, top), pt(r, top), pt(mid(q, r), top + rise)])
+        }
       } else {
-        // A flat roof with a low parapet.
-        batch.face(material('concrete', '#c9c7c0'), ring.map(([x, z]) => new THREE.Vector3(x, top, z)).reverse())
-        batch.face(material('concrete', '#c9c7c0'), ring.map(([x, z]) => new THREE.Vector3(x, top, z)))
+        // Flat roof with a raised parapet rim and a rooftop elevator/stair penthouse on taller buildings.
+        batch.face(roofConcrete, ring.map(([x, z]) => new THREE.Vector3(x, top, z)).reverse())
+        batch.face(roofConcrete, ring.map(([x, z]) => new THREE.Vector3(x, top, z)))
+        const parapetTop = top + 0.55
+        for (let k = 0; k < 4; k++) {
+          const [ax, az] = ring[k]
+          const [bx, bz] = ring[(k + 1) % 4]
+          const facing = new THREE.Vector3((ax + bx) / 2 - cx, 0, (az + bz) / 2 - cz)
+          batch.quad(copingMat, v(ax, top, az), v(bx, top, bz), v(bx, parapetTop, bz), v(ax, parapetTop, az), facing)
+        }
+        if (building.floors >= 4) {
+          const ux = ring[1][0] - ring[0][0]
+          const uz = ring[1][1] - ring[0][1]
+          const turn = Math.atan2(ux, uz)
+          batch.box(copingMat, cx, top + 1.2, cz, 3.6, 2.4, 3.2, turn)
+        }
       }
       solids.push({ ring, base, top })
     }

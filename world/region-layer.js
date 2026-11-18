@@ -60,11 +60,11 @@ const clampBox = (cx, cz, half) => ({
   x0: Math.max(0, cx - half), z0: Math.max(0, cz - half), x1: Math.min(SIZE, cx + half), z1: Math.min(SIZE, cz + half),
 })
 
-export function withRegion(environment, world) {
+export function withRegion(environment, world, { sound } = {}) {
   const near = createRegionScene()
   const far = createRegionScene()
   const whole = createRegionScene()
-  const transit = createRouteTransit({ clock: () => regionClient.now() / 1000 })
+  const transit = createRouteTransit({ clock: () => regionClient.now() / 1000, sound })
   const group = new THREE.Group()
   group.name = 'region-town'
   const routes = new THREE.Group()
@@ -133,14 +133,11 @@ export function withRegion(environment, world) {
   }
 
   function leave() {
-    if (waiting && !map) {
-      waiting = false
-      environment.setOutdoors(true)
-    }
+    waiting = false
+    environment.setOutdoors(false)
     if (!map) return
     map = null
     generation++
-    environment.setOutdoors(true)
     group.visible = false
     near.clear()
     far.clear()
@@ -164,8 +161,13 @@ export function withRegion(environment, world) {
 
   function drawTown(next, taken, clearOf, nextLots = []) {
     lots = Array.isArray(nextLots) ? nextLots : []
-    if (!next?.region) {
+    if (!next) {
       leave()
+      return
+    }
+    if (!next.region) {
+      leave()
+      environment.setOutdoors(!waiting)
       environment.drawTown(next, taken, clearOf)
       return
     }
@@ -405,11 +407,11 @@ export function withRegion(environment, world) {
   // The outside walls of the buildings, sorted into a grid.
   function wallsOf(solids) {
     walls = new Map()
-    for (const { ring } of solids) {
+    for (const { ring, base = -Infinity, top = Infinity } of solids) {
       for (let k = 0; k < ring.length; k++) {
         const [ax, az] = ring[k]
         const [bx, bz] = ring[(k + 1) % ring.length]
-        const wall = { ax, az, bx, bz, r: 0.05 }
+        const wall = { ax, az, bx, bz, r: 0.05, base, top }
         for (let j = Math.floor(Math.min(az, bz) / CELL); j <= Math.floor(Math.max(az, bz) / CELL); j++) {
           for (let i = Math.floor(Math.min(ax, bx) / CELL); i <= Math.floor(Math.max(ax, bx) / CELL); i++) {
             const key = `${i},${j}`
@@ -492,14 +494,21 @@ export function withRegion(environment, world) {
       ensureFar(focusAt.x, focusAt.z)
       ensureNear(focusAt.x, focusAt.z)
     }
-    transit.setNear([focusAt.x, focusAt.z], TRACK_REACH)
-    transit.update([focusAt.x, focusAt.z], 1600)
+  }
+
+  function updateTransit(player, ride) {
+    if (!map) return
+    const near = [player.x, player.z]
+    transit.setNear(near, TRACK_REACH)
+    transit.update(near, 1600, { x: player.x, y: player.y, z: player.z, ride })
   }
 
   return {
     ...environment,
     drawTown,
     update,
+    updateTransit,
+    regionTransit: transit,
     setQuality(next) {
       quality = next
       environment.setQuality(next)
@@ -562,6 +571,44 @@ export function withRegion(environment, world) {
       if (!map) return
       const ground = heightAt(position.x, position.z) + 0.6
       if (position.y < ground) position.y = ground
+    },
+    // Pulls the third-person camera in front of generated region buildings.
+    cameraReach(ray, reach) {
+      if (!map || !walls.size) return reach
+      const ox = ray.origin.x
+      const oy = ray.origin.y
+      const oz = ray.origin.z
+      const dx = ray.direction.x
+      const dy = ray.direction.y
+      const dz = ray.direction.z
+      const cx = Math.floor(ox / CELL)
+      const cz = Math.floor(oz / CELL)
+      const span = Math.min(3, Math.max(1, Math.ceil((reach + 2) / CELL)))
+      const seen = new Set()
+      let best = reach
+      for (let j = cz - span; j <= cz + span; j++) {
+        for (let i = cx - span; i <= cx + span; i++) {
+          for (const wall of walls.get(`${i},${j}`) ?? []) {
+            if (seen.has(wall)) continue
+            seen.add(wall)
+            const sx = wall.bx - wall.ax
+            const sz = wall.bz - wall.az
+            const denom = dx * sz - dz * sx
+            if (Math.abs(denom) <= 1e-6) continue
+            const qx = wall.ax - ox
+            const qz = wall.az - oz
+            const t = (qx * sz - qz * sx) / denom
+            if (t <= 0.2 || t >= best + 0.4) continue
+            const u = (qx * dz - qz * dx) / denom
+            if (u < 0 || u > 1) continue
+            const y = oy + dy * t
+            if (y >= wall.base && y <= wall.top + 0.35) {
+              best = Math.min(best, Math.max(1.2, t - 0.4))
+            }
+          }
+        }
+      }
+      return best
     },
     // Keeps a walker out of the buildings and off the monorail's piers (`pushOut` is the scene's).
     pushOut(x, z, pushOut, y) {

@@ -8,13 +8,13 @@
 // the old centres (road junctions, village cores), then an even lattice for the rest. Every cell
 // of the 40 m grid joins the seed it can reach most cheaply, where crossing a barrier costs
 // extra. Blocks are grown the same way inside each town.
-import { BUILT_USES, USE } from './develop.js?v=online-1794980046418'
-import { D8L, D8X, D8Z } from './grid.js?v=online-1794980046418'
-import { Heap } from './heap.js?v=online-1794980046418'
-import { placeName } from './names.js?v=online-1794980046418'
-import { unit } from './noise.js?v=online-1794980046418'
-import { STRUCTURE } from './rail.js?v=online-1794980046418'
-import { LAND } from './terrain.js?v=online-1794980046418'
+import { BUILT_USES, USE } from './develop.js'
+import { D8L, D8X, D8Z } from './grid.js'
+import { Heap } from './heap.js'
+import { placeName } from './names.js'
+import { unit } from './noise.js'
+import { STRUCTURE } from './rail.js'
+import { LAND } from './terrain.js'
 
 export const DISTRICT_CELL = 40 // metres: districts are made of cells of the 40 m planning grid
 export const TOWN_SPACING = 1100 // metres between town seeds
@@ -289,7 +289,7 @@ export function divideRegion(region, { seed = region.seed } = {}) {
         name: `${town.name}${index + 1}丁目`,
         x: block.x, z: block.z,
         area: 0, bbox: [Infinity, Infinity, -Infinity, -Infinity],
-        residents: 0, households: 0, jobs: 0, built: 0, use: USE.LOW, stations: [], neighbours: [],
+        residents: 0, households: 0, jobs: 0, built: 0, landPrice: 0, use: USE.LOW, stations: [], neighbours: [],
       })
       town.districts.push(id)
     }
@@ -308,6 +308,7 @@ export function divideRegion(region, { seed = region.seed } = {}) {
       district.residents += people.residents[index]
       district.households += people.households[index]
       district.jobs += people.jobs[index]
+      if (city.landPrice) district.landPrice += city.landPrice[index]
       useCount[id][city.use[index]]++
       if (BUILT_USES.has(city.use[index])) district.built++
     }
@@ -338,6 +339,7 @@ export function divideRegion(region, { seed = region.seed } = {}) {
   }
   for (const district of districts) {
     const cellsTotal = district.area / (terrain.cell * terrain.cell)
+    district.landPrice = cellsTotal ? Math.round((district.landPrice / cellsTotal) * 10) / 10 : 0
     district.built = cellsTotal ? district.built / cellsTotal : 0
     let best = 0
     for (let use = 0; use < 16; use++) if (useCount[district.id][use] > useCount[district.id][best]) best = use

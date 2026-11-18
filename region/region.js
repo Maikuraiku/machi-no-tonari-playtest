@@ -1,17 +1,16 @@
 // The whole region in one go: the land before people, how people developed it, who lives and
 // works where, where they travel, and the railways planned for them. Then the indexes that the
 // 1 m ground and the local streets ask, so any part of the map can be drawn down to the metre.
-import { BUILT_USES, ERAS, ROAD, USE } from './develop.js?v=online-1794980046418'
-import { developRegion } from './develop.js?v=online-1794980046418'
-import { desireLines, travelDemand } from './demand.js?v=online-1794980046418'
-import { divideRegion } from './districts.js?v=online-1794980046418'
-import { createFineTerrain, streamGeometry } from './fine.js?v=online-1794980046418'
-import { segmentIndex } from './geometry.js?v=online-1794980046418'
-import { seedOf } from './noise.js?v=online-1794980046418'
-import { densityStats, populate } from './population.js?v=online-1794980046418'
-import { STRUCTURE_NAMES, planRailways } from './rail.js?v=online-1794980046418'
-import { superblocks } from './streets.js?v=online-1794980046418'
-import { createTerrain } from './terrain.js?v=online-1794980046418'
+import { BUILT_USES, ERAS, ROAD, USE, developRegion, landPriceStats, simulateLandPrice } from './develop.js'
+import { desireLines, travelDemand } from './demand.js'
+import { divideRegion } from './districts.js'
+import { createFineTerrain, streamGeometry } from './fine.js'
+import { segmentIndex } from './geometry.js'
+import { seedOf } from './noise.js'
+import { densityStats, populate } from './population.js'
+import { STRUCTURE_NAMES, planRailways } from './rail.js'
+import { superblocks } from './streets.js'
+import { createTerrain } from './terrain.js'
 
 export const REGION_SIZE = 20000 // metres on a side
 // Bumped whenever the generator's output changes, so towns, caches and fingerprints can tell.
@@ -53,6 +52,8 @@ export function generateRegion({ seed = 1, size = REGION_SIZE } = {}, progress =
   lap('demand')
   const rail = planRailways(terrain, city, people, demand, { seed }, part(0.5, 0.95))
   lap('rail')
+  // Refine land price simulation with the planned railway stations and their ridership.
+  city.landPrice = simulateLandPrice(terrain, city, rail, { seed })
 
   progress('生活道路と1m地形の準備', 0.96)
   const blocks = superblocks(terrain, city, rail)
@@ -182,6 +183,7 @@ export function summarizeRegion(region) {
       earthwork: { cut: city.earthwork.cut, fill: city.earthwork.fill },
       newtownArea: city.newtown.reduce((sum, value) => sum + value, 0) * cellArea,
       culverts: terrain.streams.filter((stream) => stream.covered).length,
+      landPrice: landPriceStats(terrain, city),
     },
     people: {
       residents: people.total,

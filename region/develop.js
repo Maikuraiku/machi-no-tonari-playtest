@@ -3,10 +3,10 @@
 // From the 1920s the river gets levees, arterial and ring roads are built and the city spreads
 // outwards from the metropolis; parts of the hills are graded into new towns, and the streams
 // that run through built-up land are put into culverts.
-import { chaikin, lengthOf, simplify } from './geometry.js?v=online-1794980046418'
-import { boxBlur, costField, createPathFinder, distanceField, downsample, rasterizeLine, threshold } from './grid.js?v=online-1794980046418'
-import { fbm, random, unit } from './noise.js?v=online-1794980046418'
-import { LAND, riverAlong } from './terrain.js?v=online-1794980046418'
+import { chaikin, lengthOf, simplify } from './geometry.js'
+import { boxBlur, costField, createPathFinder, distanceField, downsample, rasterizeLine, threshold } from './grid.js'
+import { fbm, random, unit } from './noise.js'
+import { LAND, riverAlong } from './terrain.js'
 
 export const USE = {
   WATER: 0, RIVERBED: 1, FOREST: 2, GREEN: 3, FIELD: 4, PADDY: 5, PARK: 6,
@@ -843,12 +843,155 @@ export function developRegion(terrain, { seed = 1 } = {}, progress = () => {}) {
   }
   progress('造成と河川', 0.9)
 
-  return {
+  // Initial land price simulation (万円/m²) before railway stations are known; refined once
+  // railways and station boardings are calculated.
+  const city = {
     metropolis, villages, highways, centers, schools, parks, levees,
     use, built, newtown, ground, corridor, fieldAngle,
     roads: network,
     majorMask,
+    toArterial,
+    centerPull,
     earthwork: { cut, fill },
     travel,
+  }
+  city.landPrice = simulateLandPrice(terrain, city, null, { seed })
+  return city
+}
+
+// Base land price multipliers by use (万円/m² at a standard suburban location ~25 min from metropolis).
+const BASE_PRICE = {
+  [USE.WATER]: 0, [USE.RIVERBED]: 0, [USE.FOREST]: 4.5, [USE.GREEN]: 9, [USE.FIELD]: 14, [USE.PADDY]: 11,
+  [USE.PARK]: 22, [USE.LOW]: 48, [USE.DENSE]: 54, [USE.MID]: 68, [USE.HIGH]: 92,
+  [USE.COMMERCIAL]: 125, [USE.INDUSTRIAL]: 34, [USE.PUBLIC]: 36,
+}
+
+// Simulates land price (地価, 万円/m²) across every 20 m cell of the region, accounting for:
+// - Travel time to the metropolis (`city.travel`)
+// - Proximity to railway stations and each station's daily boardings (when `rail` is given)
+// - Proximity to arterial and trunk roads (`city.toArterial`) and local town/junction centres (`city.centerPull`)
+// - Landform (`LAND.PLATEAU` premium vs `LOWLAND` flood risk and `HILLS` slope penalty)
+// - Elevation above nearest drainage (`hand`) and micro-topographic amenity
+// - Land use zoning (`city.use`) and era of development (`city.built`)
+export function simulateLandPrice(terrain, city, rail = null, { seed = 1 } = {}) {
+  const { columns, cell, land, slope, hand } = terrain
+  const count = columns * columns
+  const grid40 = columns / 2
+  const price = new Float32Array(count)
+
+  // Station proximity premium field on the 20 m grid.
+  const stationBoost = new Float32Array(count)
+  if (rail?.lines?.length) {
+    const stations = rail.lines.flatMap((line) => line.stations)
+    for (const station of stations) {
+      const boardings = station.boardings ?? 15000
+      const transferBonus = station.transfer ? 1.28 : 1.0
+      const hubStrength = Math.min(2.4, (0.55 + 0.45 * Math.log10(Math.max(1000, boardings) / 1000)) * transferBonus)
+      const reach = 1200
+      const r = Math.ceil(reach / cell)
+      const cx = Math.floor(station.x / cell)
+      const cz = Math.floor(station.z / cell)
+      for (let dz = -r; dz <= r; dz++) {
+        const z = cz + dz
+        if (z < 0 || z >= columns) continue
+        for (let dx = -r; dx <= r; dx++) {
+          const x = cx + dx
+          if (x < 0 || x >= columns) continue
+          const d = Math.hypot(dx, dz) * cell
+          if (d > reach) continue
+          // Strong peak in the station forecourt (<180 m) and walking catchment (<800 m).
+          const core = d < 220 ? 0.85 * Math.exp(-(d * d) / (130 * 130)) : 0
+          const walk = 0.65 * Math.max(0, 1 - d / reach) ** 1.6
+          const val = hubStrength * (core + walk)
+          const idx = x + z * columns
+          if (val > stationBoost[idx]) stationBoost[idx] = val
+        }
+      }
+    }
+  }
+
+  for (let index = 0; index < count; index++) {
+    const u = city.use[index]
+    if (u === USE.WATER || u === USE.RIVERBED || city.corridor[index]) {
+      price[index] = 0
+      continue
+    }
+    const x = index % columns
+    const z = (index - x) / columns
+    const base = BASE_PRICE[u] ?? 30
+    const minutes = city.travel[(x >> 1) + (z >> 1) * grid40]
+    // Distance decay from metropolis: 15 min -> ~1.55x, 30 min -> ~1.0x, 60 min -> ~0.52x.
+    const access = Number.isFinite(minutes) ? Math.max(0.32, Math.min(1.95, 1.85 * Math.exp(-Math.max(0, minutes - 8) / 46))) : 0.4
+
+    // Landform and hazard factor: Musashino-style plateau is stable and prized; lowland has flood risk.
+    const lf = land[index]
+    let landformFactor = 1.0
+    if (lf === LAND.PLATEAU) landformFactor = 1.12
+    else if (lf === LAND.TERRACE) landformFactor = 1.04
+    else if (lf === LAND.LOWLAND) landformFactor = hand[index] < 1.5 ? 0.78 : 0.88
+    else if (lf === LAND.HILLS) landformFactor = city.newtown[index] ? 0.98 : 0.90
+
+    // Slope penalty: gentle south/plateau ground is preferred; steep slopes require retaining walls.
+    const slopeFactor = Math.max(0.55, 1 - Math.max(0, slope[index] - 0.03) * 2.2)
+
+    // Arterial road & commercial center pull.
+    const nearArterial = city.toArterial ? Math.exp(-city.toArterial[index] / 180) : 0
+    const center = city.centerPull ? city.centerPull[index] : 0
+    const roadFactor = u === USE.COMMERCIAL || u === USE.HIGH || u === USE.MID
+      ? 1 + 0.35 * nearArterial + 0.45 * center
+      : 1 + 0.12 * nearArterial + 0.22 * center
+
+    // Station catchment premium.
+    const st = stationBoost[index]
+    const stationFactor = u === USE.COMMERCIAL ? 1 + st * 1.35
+      : (u === USE.HIGH || u === USE.MID) ? 1 + st * 0.95
+      : BUILT_USES.has(u) ? 1 + st * 0.65
+      : 1 + st * 0.35
+
+    // Subtle neighbourhood prestige variation.
+    const prestige = 1 + 0.14 * fbm(seed + 509, (x * cell) / 900, (z * cell) / 900, 2)
+
+    price[index] = Math.round(base * access * landformFactor * slopeFactor * roadFactor * stationFactor * prestige * 10) / 10
+  }
+  return price
+}
+
+// Summarizes the land price distribution across built-up and residential/commercial land (万円/m²).
+export function landPriceStats(terrain, city) {
+  const { columns } = terrain
+  const count = columns * columns
+  const price = city.landPrice
+  if (!price) return { mean: 0, median: 0, p90: 0, max: 0, residentialMean: 0, commercialMean: 0 }
+  const builtValues = []
+  let sum = 0
+  let resSum = 0
+  let resCount = 0
+  let comSum = 0
+  let comCount = 0
+  let max = 0
+  for (let i = 0; i < count; i++) {
+    const p = price[i]
+    if (p <= 0 || !BUILT_USES.has(city.use[i])) continue
+    builtValues.push(p)
+    sum += p
+    if (p > max) max = p
+    const u = city.use[i]
+    if (u === USE.LOW || u === USE.DENSE || u === USE.MID || u === USE.HIGH) {
+      resSum += p
+      resCount++
+    } else if (u === USE.COMMERCIAL) {
+      comSum += p
+      comCount++
+    }
+  }
+  builtValues.sort((a, b) => a - b)
+  const q = (f) => builtValues.length ? builtValues[Math.min(builtValues.length - 1, Math.floor(f * builtValues.length))] : 0
+  return {
+    mean: builtValues.length ? Math.round(sum / builtValues.length * 10) / 10 : 0,
+    median: Math.round(q(0.5) * 10) / 10,
+    p90: Math.round(q(0.9) * 10) / 10,
+    max: Math.round(max * 10) / 10,
+    residentialMean: resCount ? Math.round(resSum / resCount * 10) / 10 : 0,
+    commercialMean: comCount ? Math.round(comSum / comCount * 10) / 10 : 0,
   }
 }
