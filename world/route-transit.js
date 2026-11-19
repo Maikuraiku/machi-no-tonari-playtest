@@ -105,31 +105,37 @@ export function createRouteTransit({ clock = () => Date.now() / 1000, sound = nu
       batch.box(pier, spot.x, under - 0.45, spot.z, TRACK_HALF * 2 + 1.4, 0.9, 1.6, turn)
       piers.push({ x: spot.x, z: spot.z, w: 1.6, d: 1.6, r: turn * 180 / Math.PI })
     }
-    // Stations: a full elevated monorail station structure with portal crossbeams, ground-level
-    // entrance halls with ticket machines and automated fare gates, stairs with glazed canopies,
-    // enclosed platforms with exterior window panes, tactile paving, benches, station nameboards,
-    // platform screen doors, and an arched truss roof canopy over both tracks (see station-solids.js).
+    // Stations: a full elevated monorail station structure with portal crossbeams below the beam
+    // and car skirts (`level - CAR.floor - BEAM.height`), ground-level entrance halls with ticket
+    // machines and automated fare gates, stairs with glazed canopies, enclosed platforms with
+    // exterior window panes, waiting room booths, station name pillars, tactile paving, benches,
+    // platform screen doors, and an overarching truss roof canopy over both tracks (see station-solids.js).
     const solids = { surfaces: [], walls: [], boxes: [] }
     const platforms = []
     const yellow = material('#e8c33a')
     const glass = material('#dfe5e8', '#ffffff', { roughness: 0.3 })
     const windowPane = material('#9ab4c4', '#ffffff', { roughness: 0.18, metalness: 0.45 })
     const woodBench = material('wood', '#8c623e')
+    const woodSlats = material('wood', '#a57c52')
     const darkMetal = material('#2c3338', '#ffffff', { roughness: 0.4, metalness: 0.65 })
     const gateBody = material('#d8dde0', '#ffffff', { roughness: 0.35, metalness: 0.4 })
     const gateFlap = material('#c93a32', '#ffffff', { roughness: 0.3 })
+    const wallTile = material('tile', '#e6e2d8')
     const ceilingLight = glow('#fff8e6', 1.15)
     const icBlue = glow('#2a9df4', 0.9)
+    const greenLamp = glow('#4cd964', 0.85)
     const doorways = doorOffsets(line.cars).filter((at) => Math.abs(at) + CAR.doorWidth / 2 < PLATFORM.length / 2)
     for (const stop of line.stops) {
       if (!close(stop.at)) continue
       const spot = way.spot(stop.at)
       const turn = Math.atan2(spot.dx, spot.dz)
-      const level = heightOn(spec.heights, stop.at) + CAR.floor
+      const beamTop = heightOn(spec.heights, stop.at)
+      const beamUnder = beamTop - BEAM.height
+      const level = beamTop + CAR.floor
       const groundHere = heightOn(spec.ground, stop.at)
       const half = stationHalf(level, groundHere)
       for (const sign of [1, -1]) {
-        batch.at(spot.x, 0, spot.z, sign > 0 ? turn : turn + Math.PI, (b) => drawHalf(b, half))
+        batch.at(spot.x, 0, spot.z, sign > 0 ? turn : turn + Math.PI, (b) => drawHalf(b, half, beamUnder))
         const placed = placeHalf(half, { x: spot.x, z: spot.z, dx: spot.dx, dz: spot.dz, sign })
         solids.surfaces.push(...placed.surfaces)
         solids.walls.push(...placed.walls)
@@ -145,12 +151,12 @@ export function createRouteTransit({ clock = () => Date.now() / 1000, sound = nu
             leaf.name = 'platform-door'
             const panel = new Batch()
             const wide = CAR.doorWidth / 2
-            panel.box(glass, 0, 0.65, 0, 0.06, 1.25, wide - 0.04)
-            panel.box(steel, 0, 1.28, 0, 0.09, 0.06, wide)
-            for (const end of [-1, 1]) panel.box(steel, 0, 0.65, end * (wide / 2 - 0.025), 0.09, 1.25, 0.05)
+            panel.box(glass, 0, 0.65, 0, 0.05, 1.25, wide - 0.04)
+            panel.box(steel, 0, 1.28, 0, 0.07, 0.06, wide)
+            for (const end of [-1, 1]) panel.box(steel, 0, 0.65, end * (wide / 2 - 0.025), 0.07, 1.25, 0.05)
             panel.build(leaf, { cast: false, where: 'out' })
             const shut = at + side * wide / 2
-            leaf.position.set(half.edge + 0.12, level, shut)
+            leaf.position.set(half.edge + 0.14, level, shut)
             platform.add(leaf)
             leaves.push({ leaf, shut, slide: side * (wide - 0.02) })
           }
@@ -161,7 +167,8 @@ export function createRouteTransit({ clock = () => Date.now() / 1000, sound = nu
         display.position.set((half.edge + half.outer) / 2, level + 2.9, 0)
         platform.add(display)
 
-        // Illuminated station name signs (駅名標) hung along the platform and at the street entrance.
+        // Illuminated station name signs (駅名標) hung along the platform wall, freestanding on the
+        // platform, and mounted over the street-level entrance portal.
         if (typeof document !== 'undefined') {
           const signTex = textTexture(`${stop.name}  ${sign > 0 ? '1番線' : '2番線'}`, {
             color: '#1b262c', background: '#f7f6f0', border: spec.color ?? '#1f7a6a', padding: 14,
@@ -171,16 +178,29 @@ export function createRouteTransit({ clock = () => Date.now() / 1000, sound = nu
           const signW = Math.min(2.4, signH * signTex.aspect)
           for (const vz of [-half.long * 0.48, half.long * 0.48]) {
             const signMesh = new THREE.Mesh(new THREE.PlaneGeometry(signW, signH), signMat)
-            signMesh.position.set(half.outer - 0.11, level + 1.95, vz)
+            signMesh.position.set(half.outer - 0.12, level + 1.95, vz)
             signMesh.rotation.y = -Math.PI / 2
             signMesh.userData.ownMaterial = true
             platform.add(signMesh)
+          }
+          if (half.stair) {
+            const entTex = textTexture(`${stop.name}駅  ${sign > 0 ? '1番線のりば' : '2番線のりば'}`, {
+              color: '#ffffff', background: spec.color ?? '#1f7a6a', border: '#f4f2ea', padding: 14,
+            })
+            const entMat = new THREE.MeshBasicMaterial({ map: entTex.map })
+            const entH = 0.34
+            const entW = Math.min(STAIR.width + 0.3, entH * entTex.aspect)
+            const entSign = new THREE.Mesh(new THREE.PlaneGeometry(entW, entH), entMat)
+            entSign.position.set((half.stair.u0 + half.stair.u1) / 2, groundHere + 2.42, half.stair.bottom + 0.88)
+            entSign.userData.ownMaterial = true
+            platform.add(entSign)
           }
         }
         node.add(platform)
         platforms.push({ stop, sign, spot, level, leaves, board, nextBoard: -Infinity })
       }
-      // Full station superstructure: portal frames tying the piers and platform decks together,
+      // Full station superstructure: portal frames tying the piers and platform decks together
+      // strictly BELOW the concrete track beams and car bogies/skirts (`beamUnder = level - 2.63`),
       // an overarching station roof with skylight spine, clerestory trusses, and line-color fascias.
       batch.at(spot.x, 0, spot.z, turn, (b) => {
         const span = half.outer + 0.65
@@ -189,63 +209,95 @@ export function createRouteTransit({ clock = () => Date.now() / 1000, sound = nu
         // Lower roof wing over each platform and raised central skylight monitor over the tracks.
         for (const s of [-1, 1]) {
           b.box(roof, s * (half.edge + (span - half.edge) / 2), roofY + 0.08, 0, span - half.edge + 0.3, 0.18, long * 2 + 2.4)
+          b.box(woodSlats, s * (half.edge + (half.outer - half.edge) / 2), roofY - 0.01, 0, half.outer - half.edge - 0.3, 0.02, long * 2 - 0.6)
           b.box(stripe, s * (span + 0.04), roofY + 0.06, 0, 0.08, 0.32, long * 2 + 2.4)
           b.box(ceilingLight, s * ((half.edge + half.outer) / 2), roofY - 0.04, 0, 0.22, 0.03, long * 2 - 2)
         }
-        b.box(roof, 0, roofY + 0.52, 0, half.edge * 2 + 0.8, 0.16, long * 2 + 2.4)
-        b.box(windowPane, 0, roofY + 0.3, 0, half.edge * 2 + 0.4, 0.28, long * 2 + 1.6)
-        b.box(stripe, 0, roofY + 0.1, -long - 1.2, span * 2, 0.38, 0.1)
-        b.box(stripe, 0, roofY + 0.1, long + 1.2, span * 2, 0.38, 0.1)
-        // Transverse steel roof trusses and concrete portal crossbeams under the platforms every 8 m.
+        // Central arched/stepped skylight roof high above the cars (`CAR.roof` is `level + 2.60`, `roofY` is `level + 3.90`).
+        b.box(roof, 0, roofY + 0.54, 0, half.edge * 2 + 0.8, 0.16, long * 2 + 2.4)
+        for (const s of [-1, 1]) {
+          // Clerestory side louver strips along the edges of the raised roof monitor (never across the track space).
+          b.box(windowPane, s * (half.edge + 0.15), roofY + 0.3, 0, 0.06, 0.32, long * 2 + 1.6)
+        }
+        b.box(stripe, 0, roofY + 0.3, -long - 1.2, span * 2, 0.42, 0.12)
+        b.box(stripe, 0, roofY + 0.3, long + 1.2, span * 2, 0.42, 0.12)
+        // Transverse steel roof trusses (at `roofY + 0.18`, well above `CAR.roof + 0.26 = level + 2.86`)
+        // and heavy concrete portal crossbeams UNDER the track beams (`beamUnder - 0.42`), with vertical
+        // concrete brackets rising under each outer platform deck (`|x| >= half.edge + 0.25`) so the
+        // straddle-beam rails and car skirts/bogies (`|x| <= 3.34`) remain 100% clear!
         for (let v = -long + 4; v <= long - 4; v += 8) {
-          b.box(steel, 0, roofY - 0.08, v, span * 2 - 0.2, 0.22, 0.22)
-          b.box(pier, 0, level - 0.68, v, half.outer * 2 - 0.4, 0.55, 0.75)
+          b.box(steel, 0, roofY + 0.18, v, span * 2 - 0.2, 0.18, 0.2)
+          b.box(pier, 0, beamUnder - 0.42, v, half.outer * 2 - 0.2, 0.84, 0.92)
+          for (const s of [-1, 1]) {
+            const supW = half.outer - half.edge - 0.35
+            const supX = s * (half.edge + 0.25 + supW / 2)
+            const supH = (level - 0.5) - (beamUnder - 0.05)
+            if (supH > 0.1) b.box(pier, supX, beamUnder - 0.05 + supH / 2, v, supW, supH, 0.72)
+          }
+        }
+        // Central station hall piers under the crossbeams at `v = -8, 8`.
+        for (const pv of [-8, 8]) {
+          const tall = beamUnder - 0.84 - groundHere
+          if (tall > 0.4) {
+            b.box(pier, 0, groundHere + 0.18, pv, 2.8, 0.36, 2.2)
+            b.box(pier, 0, groundHere + tall / 2, pv, 1.7, tall, 1.5)
+          }
         }
       })
       piers.push({ x: spot.x, z: spot.z, w: 2.4, d: 2.4, r: turn * 180 / Math.PI })
     }
 
     // One half of a station in its own frame: x across the line (out from the beam), z along it.
-    function drawHalf(b, half) {
+    function drawHalf(b, half, beamUnder) {
       const { edge, outer, long, level, ground, stair, landing } = half
       const length = long * 2
-      // The deck and its floor, with structural fascia and the yellow tactile strip along the edge.
+      // The deck and its floor, with structural fascia, under-platform ribbed soffit, and yellow tactile strip.
+      // Kept strictly at `x >= edge` so nothing encroaches on the car body or track gauge.
       b.box(deck, (edge + outer) / 2, level - 0.25, 0, outer - edge, 0.5, length)
       b.box(pier, outer + 0.04, level - 0.22, 0, 0.1, 0.56, length + 0.2)
+      b.box(stripe, outer + 0.095, level - 0.16, 0, 0.02, 0.16, length + 0.2)
       b.box(floor, (edge + outer) / 2, level + 0.005, 0, outer - edge, 0.01, length)
-      b.box(yellow, edge + 0.45, level + 0.012, 0, 0.32, 0.012, length - 0.6)
+      b.box(yellow, edge + 0.46, level + 0.012, 0, 0.32, 0.012, length - 0.6)
       // Tactile guidance path from the landing entrance to the boarding line.
       if (landing) {
         const midL = (landing.v0 + landing.v1) / 2
         b.box(yellow, (edge + 0.6 + outer) / 2, level + 0.012, midL, outer - edge - 0.6, 0.012, 0.3)
       }
-      // Back wall of the platform: waist-high concrete/steel dado with glazed windbreak windows above,
+      // Back wall of the platform: tiled dado with structural mullions and glazed windbreak windows above,
       // open where the landing meets the platform.
       const backWall = (v0, v1) => {
         const span = v1 - v0
         if (span <= 0.1) return
         const mid = (v0 + v1) / 2
         b.box(deck, outer - 0.06, level + 0.52, mid, 0.12, 1.04, span)
-        b.box(windowPane, outer - 0.05, level + 1.75, mid, 0.05, 1.4, Math.max(0.1, span - 0.16))
-        b.box(steel, outer - 0.06, level + 2.48, mid, 0.12, 0.08, span)
+        b.box(wallTile, outer - 0.125, level + 0.52, mid, 0.02, 0.96, Math.max(0.1, span - 0.1))
+        b.box(windowPane, outer - 0.05, level + 1.78, mid, 0.05, 1.46, Math.max(0.1, span - 0.16))
+        b.box(steel, outer - 0.06, level + 2.54, mid, 0.12, 0.08, span)
+        b.box(deck, outer - 0.06, level + 3.22, mid, 0.12, 1.28, span)
+        // Window mullions every 3 m.
+        for (let mv = v0 + 3; mv < v1 - 1; mv += 3) {
+          b.box(darkMetal, outer - 0.06, level + 1.78, mv, 0.09, 1.46, 0.06)
+        }
       }
       if (landing) {
         backWall(-long, landing.v0)
         backWall(landing.v1, long)
       } else backWall(-long, long)
-      // Platform end glass walls & railings.
+      // Platform end glass walls & safety railings.
       for (const endV of [-long + 0.05, long - 0.05]) {
         b.box(deck, (edge + outer) / 2, level + 0.52, endV, outer - edge, 1.04, 0.1)
         b.box(windowPane, (edge + outer) / 2, level + 1.65, endV, outer - edge - 0.15, 1.2, 0.05)
         b.box(steel, (edge + outer) / 2, level + 2.28, endV, outer - edge, 0.07, 0.1)
       }
       // Fixed platform screen panes leave the same doorways as the train; sliding leaves are separate.
+      // All screen geometry sits at `x = edge + 0.14` (at least 18 cm clear of the car side wall).
       let from = -long
       for (const at of doorways) {
         screen(from, at - CAR.doorWidth / 2)
-        // Portal header over each doorway with line-colour band.
-        b.box(steel, edge + 0.12, level + 2.18, at, 0.12, 0.16, CAR.doorWidth + 0.16)
-        b.box(stripe, edge + 0.07, level + 2.18, at, 0.03, 0.1, CAR.doorWidth + 0.12)
+        // Portal header over each doorway with line-colour band and door status indicator.
+        b.box(steel, edge + 0.14, level + 2.22, at, 0.1, 0.16, CAR.doorWidth + 0.16)
+        b.box(stripe, edge + 0.09, level + 2.22, at, 0.02, 0.1, CAR.doorWidth + 0.12)
+        b.box(greenLamp, edge + 0.2, level + 2.22, at, 0.02, 0.05, 0.32)
         from = at + CAR.doorWidth / 2
       }
       screen(from, long)
@@ -253,23 +305,30 @@ export function createRouteTransit({ clock = () => Date.now() / 1000, sound = nu
         if (v1 <= v0) return
         const mid = (v0 + v1) / 2
         const span = v1 - v0
-        b.box(glass, edge + 0.12, level + 0.65, mid, 0.08, 1.3, span)
-        b.box(steel, edge + 0.12, level + 1.3, mid, 0.1, 0.06, span)
-        b.box(stripe, edge + 0.07, level + 1.12, mid, 0.02, 0.08, span)
+        b.box(glass, edge + 0.14, level + 0.65, mid, 0.06, 1.3, span)
+        b.box(steel, edge + 0.14, level + 1.3, mid, 0.08, 0.06, span)
+        b.box(stripe, edge + 0.1, level + 1.12, mid, 0.02, 0.08, span)
         // Upper safety transom linking the doorway portals.
-        b.box(steel, edge + 0.12, level + 2.22, mid, 0.1, 0.08, span)
+        b.box(steel, edge + 0.14, level + 2.26, mid, 0.08, 0.08, span)
       }
-      // Passenger waiting benches and pillars along the platform.
-      for (const benchV of [-10, 0, 10]) {
-        if (landing && benchV >= landing.v0 - 1.8 && benchV <= landing.v1 + 1.8) continue
-        const bx = edge + (outer - edge) * 0.58
-        b.box(woodBench, bx, level + 0.44, benchV, 0.52, 0.07, 2.2)
-        b.box(woodBench, bx + 0.2, level + 0.68, benchV, 0.07, 0.42, 2.2)
-        for (const legZ of [benchV - 0.85, benchV + 0.85]) {
+      // Passenger waiting benches, glazed waiting-area windscreens, and information pillars along the platform.
+      for (const benchV of [-11, 0, 11]) {
+        if (landing && benchV >= landing.v0 - 2.2 && benchV <= landing.v1 + 2.2) continue
+        const bx = edge + (outer - edge) * 0.62
+        b.box(woodBench, bx, level + 0.44, benchV, 0.52, 0.07, 2.4)
+        b.box(woodBench, bx + 0.2, level + 0.68, benchV, 0.07, 0.42, 2.4)
+        for (const legZ of [benchV - 0.95, benchV + 0.95]) {
           b.box(darkMetal, bx, level + 0.21, legZ, 0.44, 0.42, 0.07)
         }
+        // Glass windbreak screen behind/beside the central waiting bench.
+        if (benchV === 0) {
+          for (const endZ of [-1.45, 1.45]) {
+            b.box(darkMetal, bx - 0.05, level + 1.1, endZ, 0.72, 2.2, 0.06)
+            b.box(windowPane, bx - 0.05, level + 1.15, endZ, 0.64, 1.7, 0.03)
+          }
+        }
       }
-      // Columns down to the ground every 8 m, and the roof's steel columns.
+      // Columns down to the ground every 8 m, and the roof's steel columns along the outer platform wall.
       for (let v = -long + 4; v <= long - 4; v += 8) {
         const height = level - 0.5 - ground
         if (height > 0.5) {
@@ -279,7 +338,7 @@ export function createRouteTransit({ clock = () => Date.now() / 1000, sound = nu
       }
       for (let v = -long + 2; v <= long - 2; v += 8) b.box(steel, outer - 0.2, level + PLATFORM.roof / 2, v, 0.2, PLATFORM.roof, 0.2)
       if (!stair) return
-      // Upper station concourse / landing level with ticket gate line, fare machines, and glass walls.
+      // Upper station concourse / landing level with ticket gate line, station office window, and glass walls.
       const lMidU = (landing.u0 + landing.u1) / 2
       const lMidV = (landing.v0 + landing.v1) / 2
       const lW = landing.u1 - landing.u0
@@ -287,12 +346,13 @@ export function createRouteTransit({ clock = () => Date.now() / 1000, sound = nu
       b.box(deck, lMidU, level - 0.25, lMidV, lW, 0.5, lD)
       b.box(floor, lMidU, level + 0.006, lMidV, lW, 0.01, lD)
       b.box(yellow, lMidU, level + 0.012, landing.v1 - 0.15, STAIR.width - 0.2, 0.012, 0.28)
-      // Glazed enclosure around the upper landing.
+      // Glazed enclosure around the upper landing + overhead ceiling lighting.
       b.box(deck, (outer + landing.u1) / 2, level + 0.52, landing.v0 + 0.04, landing.u1 - outer, 1.04, 0.08)
-      b.box(windowPane, (outer + landing.u1) / 2, level + 1.7, landing.v0 + 0.04, landing.u1 - outer - 0.1, 1.3, 0.04)
+      b.box(windowPane, (outer + landing.u1) / 2, level + 1.75, landing.v0 + 0.04, landing.u1 - outer - 0.1, 1.4, 0.04)
       b.box(deck, landing.u1 - 0.04, level + 0.52, lMidV, 0.08, 1.04, lD)
-      b.box(windowPane, landing.u1 - 0.04, level + 1.7, lMidV, 0.04, 1.3, lD - 0.1)
-      b.box(roof, lMidU, level + PLATFORM.roof - 0.1, lMidV, lW + 0.4, 0.16, lD + 0.6)
+      b.box(windowPane, landing.u1 - 0.04, level + 1.75, lMidV, 0.04, 1.4, lD - 0.1)
+      b.box(roof, lMidU, level + PLATFORM.roof - 0.08, lMidV, lW + 0.45, 0.18, lD + 0.7)
+      b.box(ceilingLight, lMidU, level + PLATFORM.roof - 0.18, lMidV, 0.35, 0.03, lD - 0.4)
       // Automated ticket gates (自動改札機) at the threshold between landing and platform (decorative, non-blocking).
       for (const gz of [landing.v0 + 0.35, landing.v1 - 0.35]) {
         b.box(gateBody, outer + 0.05, level + 0.48, gz, 0.95, 0.96, 0.22)
@@ -308,30 +368,40 @@ export function createRouteTransit({ clock = () => Date.now() / 1000, sound = nu
         const v = stair.bottom - stair.run * (k + 0.5) / steps
         b.box(deck, middle, top - 0.15, v, STAIR.width, 0.3, stair.run / steps + 0.02)
       }
-      // The concrete stringers under the flight, glazed side screens, handrails, and sloping roof canopy.
+      // The concrete stringers under the flight, glazed side screens, double handrails, and sloping roof canopy.
       const p = (u, y, v) => new THREE.Vector3(u, y, v)
       for (const u of [stair.u0, stair.u1]) {
         b.face(pier, [p(u, ground, stair.bottom), p(u, level - 0.3, stair.top), p(u, level + 0.9, stair.top), p(u, ground + 0.9, stair.bottom)])
         b.face(pier, [p(u, ground + 0.9, stair.bottom), p(u, level + 0.9, stair.top), p(u, level - 0.3, stair.top), p(u, ground, stair.bottom)])
-        b.face(windowPane, [p(u, ground + 0.9, stair.bottom), p(u, level + 0.9, stair.top), p(u, level + 2.15, stair.top), p(u, ground + 2.15, stair.bottom)])
-        b.face(windowPane, [p(u, ground + 2.15, stair.bottom), p(u, level + 2.15, stair.top), p(u, level + 0.9, stair.top), p(u, ground + 0.9, stair.bottom)])
+        b.face(windowPane, [p(u, ground + 0.9, stair.bottom), p(u, level + 0.9, stair.top), p(u, level + 2.2, stair.top), p(u, ground + 2.2, stair.bottom)])
+        b.face(windowPane, [p(u, ground + 2.2, stair.bottom), p(u, level + 2.2, stair.top), p(u, level + 0.9, stair.top), p(u, ground + 0.9, stair.bottom)])
         b.bar(steel, p(u, ground + 0.95, stair.bottom), p(u, level + 0.95, stair.top), 0.06, 0.06)
-        b.bar(steel, p(u, ground + 2.2, stair.bottom), p(u, level + 2.2, stair.top), 0.08, 0.08)
+        b.bar(steel, p(u, ground + 0.72, stair.bottom), p(u, level + 0.72, stair.top), 0.045, 0.045)
+        b.bar(steel, p(u, ground + 2.25, stair.bottom), p(u, level + 2.25, stair.top), 0.08, 0.08)
       }
       b.face(pier, [p(stair.u0, ground - 0.2, stair.bottom), p(stair.u1, ground - 0.2, stair.bottom), p(stair.u1, level - 0.3, stair.top), p(stair.u0, level - 0.3, stair.top)])
       // Sloping canopy roof over the entire stair flight + support column under the landing.
-      b.bar(roof, p(middle, ground + 2.55, stair.bottom + 0.4), p(middle, level + 2.55, stair.top - 0.2), STAIR.width + 0.45, 0.14)
+      b.bar(roof, p(middle, ground + 2.6, stair.bottom + 0.4), p(middle, level + 2.6, stair.top - 0.2), STAIR.width + 0.48, 0.15)
       b.box(pier, middle, (ground + level) / 2 - 0.3, stair.top + 0.15, STAIR.width, level - ground, 0.35)
-      // Street-level entrance portal at `stair.bottom` with ticket vending machine alcove & header sign band.
-      const portalZ = stair.bottom + 0.3
-      b.box(steel, stair.u0 - 0.05, ground + 1.25, portalZ, 0.12, 2.5, 0.5)
-      b.box(steel, stair.u1 + 0.05, ground + 1.25, portalZ, 0.12, 2.5, 0.5)
-      b.box(roof, middle, ground + 2.55, portalZ, STAIR.width + 0.5, 0.18, 1.1)
-      b.box(stripe, middle, ground + 2.38, portalZ + 0.52, STAIR.width + 0.46, 0.24, 0.06)
+      // Under-stair enclosed station machinery / ticket office housing on the street level.
+      const underLen = Math.min(stair.run * 0.55, 8.5)
+      if (underLen > 3 && level - ground > 4.5) {
+        const uMidV = stair.top + underLen / 2 + 0.3
+        const uH = Math.min(2.8, (level - ground) * 0.45)
+        b.box(wallTile, middle, ground + uH / 2, uMidV, STAIR.width - 0.08, uH, underLen)
+      }
+      // Street-level entrance portal at `stair.bottom` with ticket vending machine alcove, fare map & header sign band.
+      const portalZ = stair.bottom + 0.32
+      b.box(steel, stair.u0 - 0.05, ground + 1.3, portalZ, 0.12, 2.6, 0.55)
+      b.box(steel, stair.u1 + 0.05, ground + 1.3, portalZ, 0.12, 2.6, 0.55)
+      b.box(roof, middle, ground + 2.62, portalZ, STAIR.width + 0.55, 0.18, 1.15)
+      b.box(stripe, middle, ground + 2.44, portalZ + 0.56, STAIR.width + 0.5, 0.26, 0.06)
+      b.box(ceilingLight, middle, ground + 2.51, portalZ + 0.1, STAIR.width - 0.2, 0.03, 0.4)
       b.box(yellow, middle, ground + 0.02, stair.bottom + 0.25, STAIR.width - 0.2, 0.015, 0.32)
       // Ticket vending machine & fare map board recessed beside the outer stair wall under the flight.
-      b.box(darkMetal, stair.u1 + 0.18, ground + 0.95, stair.bottom - 1.6, 0.28, 1.9, 1.4)
-      b.box(icBlue, stair.u1 + 0.33, ground + 1.2, stair.bottom - 1.6, 0.02, 0.55, 0.95)
+      b.box(darkMetal, stair.u1 + 0.18, ground + 1.0, stair.bottom - 1.8, 0.28, 2.0, 1.8)
+      b.box(icBlue, stair.u1 + 0.33, ground + 1.18, stair.bottom - 1.4, 0.02, 0.58, 0.8)
+      b.box(ceilingLight, stair.u1 + 0.33, ground + 1.45, stair.bottom - 2.25, 0.02, 0.45, 0.65)
     }
     batch.build(node, { where: 'out' })
     return { node, piers, solids, platforms }

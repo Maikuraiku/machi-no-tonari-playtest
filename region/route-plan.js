@@ -6,9 +6,9 @@
 // another line where the two cross; and the land each station stands on, as a rectangle of
 // 8 m tiles that the server keeps free. Where two lines' stations would stand on the same land
 // (an interchange), the later line's station slides along its line until they part.
-import { trainLength } from '../world/monorail-line.js?v=online-1794980046418'
-import { CLEARANCE, CROSSING_CLEARANCE, PLATFORM, TRACK_HALF, beamProfile } from '../world/route-line.js?v=online-1794980046418'
-import { STEP, encodeLine } from './game-pack.js?v=online-1794980046418'
+import { trainLength } from '../world/monorail-line.js'
+import { CLEARANCE, CROSSING_CLEARANCE, PLATFORM, TRACK_HALF, beamProfile } from '../world/route-line.js'
+import { STEP, encodeLine } from './game-pack.js'
 
 const TILE = 8
 const SLIDES = [20, -20, 40, -40, 60, -60, 80, -80, 100, -100, 120, -120, 140, -140, 160, -160]
@@ -173,8 +173,9 @@ export function planRoutes(region) {
   }
 
   // Beam profiles; crossings depend on the lower line's beam, so a few rounds settle them.
+  const stationHalfSpan = Math.max(half + 8, PLATFORM.length / 2 + 4)
   const profile = (plan) => {
-    const level = plan.stations.map((station) => [station.s - half - 8, station.s + half + 8])
+    const level = plan.stations.map((station) => [station.s - stationHalfSpan, station.s + stationHalfSpan])
     const floor = plan.stations.map((station) => [station.s - PLATFORM.length / 2, station.s + PLATFORM.length / 2, station.floor + CLEARANCE])
     return beamProfile(plan.ground, STEP, { level, floor: [...floor, ...plan.floors] })
   }

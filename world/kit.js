@@ -844,25 +844,64 @@ const TEXTURES = {
     p.speckle(420, [0.5, 1.7], ['rgba(56,56,52,0.32)', 'rgba(236,235,228,0.28)'], null)
       .noise({ cells: 64, octaves: 2, colour: 15, height: 0.22, seed: 49 }).noise({ cells: 3, octaves: 3, colour: 16, seed: 50 })
   } },
-  grass: { size: 512, metres: 6, depth: 0.02, rough: [1, 0.92], paint(p) {
+  grass: { size: 512, metres: 5.5, depth: 0.024, rough: [0.98, 0.86], relief: true, paint(p) {
     const { size } = p
-    p.fill('#587040')
-    for (let blade = 0; blade < 5200; blade++) {
+    p.fill('#566f3e', 0.35)
+    // Rich soil and moss patches beneath the turf.
+    p.speckle(480, [2.5, 8], ['rgba(68,58,42,0.22)', 'rgba(54,78,38,0.28)', 'rgba(98,118,58,0.24)'], (roll) => 0.25 + roll * 0.3)
+    for (let blade = 0; blade < 7200; blade++) {
       const tone = p.roll()
       const x = p.roll() * size
       const y = p.roll() * size
-      p.line(x, y, x + (p.roll() - 0.5) * 6, y - 3 - p.roll() * 6, 1,
-        tone > 0.6 ? 'rgba(134,156,86,0.5)' : tone > 0.25 ? 'rgba(52,82,40,0.55)' : 'rgba(126,124,70,0.4)', 0.4 + tone * 0.5)
+      const dx = (p.roll() - 0.5) * 7
+      const dy = -2.5 - p.roll() * 6.5
+      p.line(x, y, x + dx, y + dy, 0.9 + p.roll() * 0.7,
+        tone > 0.65 ? 'rgba(138,162,88,0.52)' : tone > 0.3 ? 'rgba(54,84,40,0.56)' : 'rgba(122,118,66,0.42)', 0.42 + tone * 0.52)
     }
-    p.noise({ cells: 5, octaves: 4, colour: 34, height: 0.2, seed: 51, tint: [0.9, 1, 0.5] }).noise({ cells: 26, octaves: 2, colour: 16, seed: 52, tint: [1, 1, 0.3] })
+    // Clover / small wildflower leaf flecks.
+    p.speckle(650, [0.7, 1.9], ['rgba(154,176,98,0.45)', 'rgba(38,60,28,0.45)', 'rgba(196,192,138,0.28)'], (roll) => 0.55 + roll * 0.4)
+    p.noise({ cells: 5, octaves: 4, colour: 32, height: 0.24, seed: 51, tint: [0.9, 1, 0.55] }).noise({ cells: 28, octaves: 2, colour: 16, height: 0.14, seed: 52, tint: [1, 1, 0.35] })
   } },
-  dirt: { size: 256, metres: 5, depth: 0.01, rough: [1, 0.94], paint(p) {
-    p.fill('#88765c').speckle(260, [0.6, 2.4], ['rgba(60,50,40,0.4)', 'rgba(190,176,150,0.35)'], (roll) => roll)
-      .noise({ cells: 4, octaves: 4, colour: 30, height: 0.3, seed: 53 }).noise({ cells: 90, octaves: 1, colour: 14, height: 0.3, seed: 54 })
+  terrainGround: { size: 512, metres: 6.4, depth: 0.028, rough: [0.98, 0.84], relief: true, paint(p) {
+    const { size } = p
+    // Neutral grey-white albedo so vertex colours (forest, paddy, field, riverbed, residential)
+    // supply the hue while the texture contributes crisp turf, soil crumbs, pebbles and micro-relief.
+    p.fill('#e6e6e2', 0.44)
+    p.speckle(620, [2, 7.5], ['rgba(186,184,176,0.35)', 'rgba(246,245,240,0.32)', 'rgba(162,158,148,0.28)'], (roll) => 0.28 + roll * 0.36)
+    for (let blade = 0; blade < 6400; blade++) {
+      const tone = p.roll()
+      const x = p.roll() * size
+      const y = p.roll() * size
+      const angle = (p.roll() - 0.5) * 2.2
+      const len = 3 + p.roll() * 5.5
+      p.line(x, y, x + Math.sin(angle) * len, y - Math.cos(angle) * len, 1.0,
+        tone > 0.5 ? 'rgba(255,255,250,0.36)' : 'rgba(164,162,154,0.38)', 0.4 + tone * 0.52)
+    }
+    p.speckle(1100, [0.6, 2.1], ['rgba(140,136,128,0.36)', 'rgba(255,255,252,0.38)'], (roll) => 0.35 + roll * 0.6)
+      .noise({ cells: 6, octaves: 4, colour: 22, height: 0.28, seed: 65, ridge: true })
+      .noise({ cells: 36, octaves: 2, colour: 14, height: 0.22, seed: 66 })
   } },
-  gravel: { size: 256, metres: 1.5, depth: 0.012, rough: [1, 0.9], relief: true, paint(p) {
-    p.fill('#77746c', 0.1).speckle(900, [2, 5], ['#b9b5aa', '#9e9a90', '#c9c5ba', '#8a877e', '#a8a094'], (roll) => 0.5 + roll * 0.5)
-      .noise({ cells: 80, octaves: 1, colour: 12, height: 0.1, seed: 55 })
+  dirt: { size: 512, metres: 4.5, depth: 0.016, rough: [0.99, 0.88], relief: true, paint(p) {
+    p.fill('#867358', 0.42)
+      .speckle(1400, [0.6, 3.2], ['rgba(56,46,34,0.44)', 'rgba(186,170,142,0.38)', 'rgba(112,94,72,0.42)', 'rgba(210,196,172,0.26)'], (roll) => 0.22 + roll * 0.72)
+      .cracks(6, 'rgba(48,38,28,0.38)', { width: 1.1, level: 0.14, steps: 22 })
+      .noise({ cells: 5, octaves: 4, colour: 32, height: 0.34, seed: 53, ridge: true })
+      .noise({ cells: 96, octaves: 2, colour: 16, height: 0.32, seed: 54 })
+  } },
+  gravel: { size: 512, metres: 1.8, depth: 0.016, rough: [0.98, 0.84], relief: true, paint(p) {
+    p.fill('#737068', 0.14)
+      .speckle(2200, [1.6, 5.4], ['#b9b5aa', '#9e9a90', '#c9c5ba', '#8a877e', '#a8a094', '#68645c', '#d6d1c6'], (roll) => 0.42 + roll * 0.56)
+      .speckle(900, [0.6, 1.8], ['rgba(36,34,30,0.48)', 'rgba(240,236,228,0.34)'], (roll) => 0.3 + roll * 0.6)
+      .noise({ cells: 84, octaves: 2, colour: 14, height: 0.14, seed: 55 })
+  } },
+  revetment: { size: 512, metres: 2.8, depth: 0.016, rough: [0.96, 0.78], relief: true, paint(p) {
+    // Stepped concrete/stone river bank revetment blocks (護岸ブロック) with waterline moss & weathering.
+    courses(p, 8, 8, { joint: '#52524c', jointLevel: 0.1, gap: 4.5, stagger: true, tone: 20, bevel: 2.4,
+      palette: [[166, 165, 158], [154, 154, 146], [176, 174, 166], [146, 148, 138], [160, 158, 150]] })
+    p.streaks(32, 'rgba(44,58,38,0.24)', { width: 9, length: 0.65 })
+      .streaks(18, 'rgba(32,34,30,0.22)', { width: 6, length: 0.75 })
+      .speckle(520, [0.6, 2.0], ['rgba(42,46,38,0.38)', 'rgba(220,218,210,0.26)'], 0.25)
+      .noise({ cells: 48, octaves: 2, colour: 16, height: 0.22, seed: 67 })
   } },
   // Hollow concrete blocks (390 x 190 mm) laid with 10 mm joints: four to a course, eight courses.
   cblock: { size: 512, metres: 1.6, depth: 0.006, rough: [0.98, 0.9], relief: true, paint(p) {
@@ -1166,12 +1205,15 @@ export const glow = (color, intensity = 1.6) => {
   return materials.get(key)
 }
 
-// A seamless normal map of crossing ripples for the sea.
+// A seamless normal map of crossing ripples and flow wavelets for rivers, streams and the sea.
 export function waterNormals(size = 256) {
   const canvas = canvasOf(size)
   const context = canvas.getContext('2d')
   const image = context.createImageData(size, size)
-  const waves = [[1, 2, 0.9, 0.3], [3, 1, 0.6, 1.7], [2, 5, 0.42, 4.1], [5, 3, 0.3, 2.6], [7, 6, 0.2, 5.2], [4, 9, 0.16, 0.8]]
+  const waves = [
+    [1, 2, 0.92, 0.3], [3, 1, 0.64, 1.7], [2, 5, 0.46, 4.1], [5, 3, 0.34, 2.6],
+    [7, 6, 0.24, 5.2], [4, 9, 0.18, 0.8], [11, 8, 0.12, 3.4], [8, 13, 0.1, 1.9],
+  ]
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       let dx = 0
@@ -1181,10 +1223,10 @@ export function waterNormals(size = 256) {
         dx += slope * fx
         dy += slope * fy
       }
-      const length = Math.hypot(dx * 0.22, dy * 0.22, 1)
+      const length = Math.hypot(dx * 0.24, dy * 0.24, 1)
       const offset = (y * size + x) * 4
-      image.data[offset] = (-dx * 0.22 / length * 0.5 + 0.5) * 255
-      image.data[offset + 1] = (-dy * 0.22 / length * 0.5 + 0.5) * 255
+      image.data[offset] = (-dx * 0.24 / length * 0.5 + 0.5) * 255
+      image.data[offset + 1] = (-dy * 0.24 / length * 0.5 + 0.5) * 255
       image.data[offset + 2] = (1 / length * 0.5 + 0.5) * 255
       image.data[offset + 3] = 255
     }
@@ -1193,6 +1235,7 @@ export function waterNormals(size = 256) {
   const map = new THREE.CanvasTexture(canvas)
   map.wrapS = THREE.RepeatWrapping
   map.wrapT = THREE.RepeatWrapping
+  map.anisotropy = anisotropy
   return map
 }
 

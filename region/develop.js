@@ -548,7 +548,7 @@ export function developRegion(terrain, { seed = 1 } = {}, progress = () => {}) {
   for (let index = 0; index < count; index++) if (land[index] === LAND.LOWLAND || land[index] === LAND.CHANNEL) lowland[index] = 1
   const toLowland = distanceField(lowland, columns, cell)
   for (let index = 0; index < count; index++) {
-    if (slope[index] > 0.12 && toLowland[index] < 280 && land[index] !== LAND.HILLS) {
+    if (!corridor[index] && slope[index] > 0.12 && toLowland[index] < 280 && land[index] !== LAND.HILLS) {
       reserved[index] = 1
       use[index] = USE.GREEN
     }

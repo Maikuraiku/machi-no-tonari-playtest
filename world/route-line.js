@@ -3,7 +3,7 @@
 // runs along the line's own curves at a height above the real ground that keeps the roads below
 // clear, climbs no steeper than a monorail can, and is level through every station. Nothing
 // here needs a screen, so all of it can be tested.
-import { BEAM, CAR, DRIVE, trainLength } from './monorail-line.js?v=online-1794980046418'
+import { BEAM, CAR, DRIVE, trainLength } from './monorail-line.js'
 
 // The top of the beam stands at least this far above the ground: the skirts of the cars then
 // pass 5.25 m over the road, above the 4.5 m every Japanese road keeps clear (建築限界).
@@ -101,8 +101,10 @@ export function routeSpec(line, { origin = [0, 0], datum = 0, from = 0, to = Inf
     ground.push((line.ground?.[k] ?? 0) - datum)
   }
   const offset = first * step
-  // Each platform is level for the length of the train and a little more either side.
-  const level = stations.map((station) => [station.s - offset - half - 8, station.s - offset + half + 8])
+  // Each platform is level for the length of the station platforms and a little more either side,
+  // so the beam never pitches inside the station box.
+  const stationHalfSpan = Math.max(half + 8, PLATFORM.length / 2 + 4)
+  const level = stations.map((station) => [station.s - offset - stationHalfSpan, station.s - offset + stationHalfSpan])
   const beam = beamProfile(ground, step, { level })
   const heights = Array.from(beam, (y, index) => [index * step, Math.round(y * 100) / 100])
   const groundline = ground.map((g, index) => [index * step, Math.round(g * 100) / 100])

@@ -33,11 +33,17 @@ export function regionWindow(region, { x0, z0, x1, z1, step = 2, buildings = tru
   // Heights at the grid's corners (fine.heights samples pixel centres, hence the half step).
   const ground = region.fine.heights(x0 - step / 2, z0 - step / 2, step, width, depth)
   const use = new Uint8Array(width * depth)
+  const era = new Uint8Array(width * depth)
+  const land = new Uint8Array(width * depth)
   for (let j = 0; j < depth; j++) {
     const row = Math.min(columns - 1, Math.max(0, Math.floor((z0 + j * step) / cell)))
     for (let i = 0; i < width; i++) {
       const column = Math.min(columns - 1, Math.max(0, Math.floor((x0 + i * step) / cell)))
-      use[i + j * width] = city.use[column + row * columns]
+      const at = column + row * columns
+      const k = i + j * width
+      use[k] = city.use[at]
+      era[k] = city.built ? city.built[at] : 0
+      land[k] = terrain.land ? terrain.land[at] : 0
     }
   }
 
@@ -46,16 +52,21 @@ export function regionWindow(region, { x0, z0, x1, z1, step = 2, buildings = tru
   for (const link of city.roads.links) {
     const [bx0, bz0, bx1, bz1] = boxOf(link.points)
     if (!overlaps(bx0, bz0, bx1, bz1, x0 - margin, z0 - margin, x1 + margin, z1 + margin)) continue
-    roads.push({ kind: link.kind, width: ROAD_WIDTH[link.kind], points: Float32Array.from(link.points) })
+    roads.push({ kind: link.kind, era: link.era ?? 4, width: ROAD_WIDTH[link.kind], points: Float32Array.from(link.points) })
   }
-  const streets = (withStreets ? streetsIn(region, x0, z0, x1, z1) : []).map((street) => ({ points: Float32Array.from(street.points), width: street.width }))
+  const streets = (withStreets ? streetsIn(region, x0, z0, x1, z1) : []).map((street) => ({
+    points: Float32Array.from(street.points),
+    width: street.width,
+    kind: street.kind ?? 'street',
+    era: street.era ?? 4,
+  }))
   const houses = buildings
     ? region.buildingCache?.inWindow(x0, z0, x1, z1) ?? buildingsIn(region, x0, z0, x1, z1)
       .filter((building) => {
         const [bx0, bz0, bx1, bz1] = boxOf(building.corners)
         return overlaps(bx0, bz0, bx1, bz1, x0, z0, x1, z1)
       })
-      .map((building) => ({ corners: Float32Array.from(building.corners), floors: building.floors, use: building.use, tone: building.tone }))
+      .map((building) => ({ corners: Float32Array.from(building.corners), lot: building.lot ?? [0.3, 0.3, 0.4, 0.3], tier: building.tier ?? 1, floors: building.floors, use: building.use, tone: building.tone }))
     : []
   const water = []
   for (const stream of streams.list) {
@@ -94,6 +105,8 @@ export function regionWindow(region, { x0, z0, x1, z1, step = 2, buildings = tru
     heights: ground.height,
     water: ground.water,
     use,
+    era,
+    land,
     roads,
     streets,
     buildings: houses,

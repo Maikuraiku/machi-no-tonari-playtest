@@ -30,6 +30,8 @@ export function preloadBuildings(region, progress = () => {}) {
       })
       if (!owned.length) continue
       const corners = new Float32Array(owned.length * 8)
+      const lots = new Uint8Array(owned.length * 4)
+      const tiers = new Uint8Array(owned.length)
       const floors = new Uint8Array(owned.length)
       const uses = new Uint8Array(owned.length)
       // Housing tones are multiples of 1/255. Schools use 0.5 exactly.
@@ -38,6 +40,15 @@ export function preloadBuildings(region, progress = () => {}) {
       for (let id = 0; id < owned.length; id++) {
         const record = owned[id]
         corners.set(record.corners, id * 8)
+        const lot = record.lot
+        if (lot) {
+          const j = id * 4
+          lots[j] = Math.min(255, Math.max(0, Math.round(lot[0] * 10)))
+          lots[j + 1] = Math.min(255, Math.max(0, Math.round(lot[1] * 10)))
+          lots[j + 2] = Math.min(255, Math.max(0, Math.round(lot[2] * 10)))
+          lots[j + 3] = Math.min(255, Math.max(0, Math.round(lot[3] * 10)))
+        }
+        tiers[id] = record.tier ?? 1
         floors[id] = record.floors
         uses[id] = record.use
         tones[id] = record.tone === 0.5 ? 256 : Math.round(record.tone * 255)
@@ -50,7 +61,7 @@ export function preloadBuildings(region, progress = () => {}) {
           bounds[3] = Math.max(bounds[3], cz)
         }
       }
-      tiles.push({ corners, floors, uses, tones, bounds })
+      tiles.push({ corners, lots, tiers, floors, uses, tones, bounds })
       count += owned.length
     }
     progress((row + 1) / columns)
@@ -58,7 +69,7 @@ export function preloadBuildings(region, progress = () => {}) {
 
   function inWindow(x0, z0, x1, z1) {
     const out = []
-    for (const { corners, floors, uses, tones, bounds } of tiles) {
+    for (const { corners, lots, tiers, floors, uses, tones, bounds } of tiles) {
       if (!overlaps(...bounds, x0, z0, x1, z1)) continue
       for (let id = 0; id < floors.length; id++) {
         const i = id * 8
@@ -67,8 +78,16 @@ export function preloadBuildings(region, progress = () => {}) {
         const bx = Math.max(corners[i], corners[i + 2], corners[i + 4], corners[i + 6])
         const bz = Math.max(corners[i + 1], corners[i + 3], corners[i + 5], corners[i + 7])
         if (!overlaps(ax, az, bx, bz, x0, z0, x1, z1)) continue
+        const j = id * 4
         // Transfer only this footprint's copy. A later window still needs the original buffer.
-        out.push({ corners: corners.slice(i, i + 8), floors: floors[id], use: uses[id], tone: tones[id] === 256 ? 0.5 : tones[id] / 255 })
+        out.push({
+          corners: corners.slice(i, i + 8),
+          lot: [lots[j] / 10, lots[j + 1] / 10, lots[j + 2] / 10, lots[j + 3] / 10],
+          tier: tiers[id],
+          floors: floors[id],
+          use: uses[id],
+          tone: tones[id] === 256 ? 0.5 : tones[id] / 255,
+        })
       }
     }
     return out

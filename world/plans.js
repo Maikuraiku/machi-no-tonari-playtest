@@ -13,8 +13,8 @@
 // the flat it belongs to; '0' is shared space.
 import {
   BODY, CELL, CELLS, FINISHES, FRAME_COLORS, ITEMS, OPENINGS, ROOFS, ROOM_LABELS, STYLES, colliders, frontDoors, hash, houseSeed,
-} from './design.js?v=online-1794980046418'
-import { equip, fenceYard } from './exterior.js?v=online-1794980046418'
+} from './design.js'
+import { equip, fenceYard } from './exterior.js'
 
 const SIDES = [
   { name: 's', dx: 0, dz: 1 }, { name: 'n', dx: 0, dz: -1 }, { name: 'e', dx: 1, dz: 0 }, { name: 'w', dx: -1, dz: 0 },
@@ -491,16 +491,18 @@ export function lookOf(house) {
   const chosen = house.look ?? {}
   if (Object.hasOwn(FINISHES, chosen.wall)) {
     look.wall = chosen.wall
-    look.low = undefined
-  }
+    look.low = Object.hasOwn(FINISHES, chosen.low) ? chosen.low : undefined
+  } else if (Object.hasOwn(FINISHES, chosen.low)) look.low = chosen.low
   if (Object.hasOwn(FINISHES, chosen.roof)) roof.f = chosen.roof
   if (Object.hasOwn(ROOFS, chosen.roofKind)) {
     roof.k = chosen.roofKind
     if (roof.k !== 'flat') {
-      roof.pitch ??= 30
+      roof.pitch ??= roof.k === 'shed' ? 12 : 30
       roof.eave ??= 0.45
     } else roof.parapet ??= 0.4
   }
+  if (Number.isFinite(chosen.eave) && roof.k !== 'flat') roof.eave = chosen.eave
+  if (['bars', 'panel', 'glass', 'solid'].includes(chosen.rail)) look.rail = chosen.rail
   if (Object.hasOwn(FRAME_COLORS, chosen.frame)) look.frame = chosen.frame
   if (Object.hasOwn(FRAME_COLORS, chosen.door)) look.door = chosen.door
   return { ...look, style, seed, roof }
@@ -538,7 +540,9 @@ function windowsFor(style, room, face, cells, towards, level, front) {
 // ---- From plan to design -------------------------------------------------------------
 
 // Turns an easy grid plan into walls, openings, rooms, furniture, stairs and lifts.
-export function compileDesign(house) {
+// When `exteriorOnly` is true (e.g. regional streetscape geometry), skips indoor furniture
+// placement and reachability clearing while preserving the exact exterior shell, roof and yard.
+export function compileDesign(house, { exteriorOnly = false, compactYard = false } = {}) {
   const look = lookOf(house)
   const { style, seed } = look
   const info = STYLES[style]
@@ -738,7 +742,7 @@ export function compileDesign(house) {
       seeds.push(seat)
     }
 
-    furnish({ plan, level, rooms, walls, openings, items, house, style, info, flights })
+    if (!exteriorOnly) furnish({ plan, level, rooms, walls, openings, items, house, style, info, flights })
 
     const stairs = flights.here.map((spec) => ({ k: 'path', pts: spec.pts, w: spec.w, ...(spec.turn === 'winder' ? { turn: 'winder' } : {}), look: spec.look }))
     const liftList = lifts.map((lift) => ({ x: lift.x, z: lift.z, w: lift.w, d: lift.d, r: lift.r }))
@@ -799,11 +803,13 @@ export function compileDesign(house) {
   }
 
   const draft = { v: 2, style, base: info.base, ceiling: info.ceiling, storeys, roof: look.roof, yard }
-  layYard(draft, plan, look, info, house)
+  layYard(draft, plan, look, info, house, { compact: compactYard })
   // The wall or fence round the lot, the gate post, and what hangs on and stands by the outside walls.
-  fenceYard(draft, { lotWidth: plan.lotWidth, lotDepth: plan.lotDepth, style })
+  if (!compactYard) fenceYard(draft, { lotWidth: plan.lotWidth, lotDepth: plan.lotDepth, style })
   equip(draft, { lotWidth: plan.lotWidth, lotDepth: plan.lotDepth, style })
-  for (let level = 0; level < storeys.length; level++) clearTheWay(draft, level, [plan.lotWidth, plan.lotDepth])
+  if (!exteriorOnly) {
+    for (let level = 0; level < storeys.length; level++) clearTheWay(draft, level, [plan.lotWidth, plan.lotDepth])
+  }
   // Storeys that repeat the one below only say so: a tower is mostly the same plan again and again.
   const seen = []
   const compact = storeys.map((storey) => {
@@ -1012,9 +1018,15 @@ export function porchesFor(design, lotWidth, lotDepth, wall = 0.17) {
 }
 
 // The porch and the steps down from each front door, a path to the street, a place for a car.
-function layYard(design, plan, look, info, house) {
+function layYard(design, plan, look, info, house, { compact = false } = {}) {
   const { yard } = design
   const porches = porchesFor(design, plan.lotWidth, plan.lotDepth, info.wall)
+  if (compact) {
+    yard.pads.push(...porches.pads.filter((pad) => pad.porch))
+    yard.steps.push(...porches.steps)
+    void look
+    return
+  }
   yard.pads.push(...porches.pads)
   yard.steps.push(...porches.steps)
   // Parking: the cells marked for a car on the ground floor.
@@ -1174,4 +1186,306 @@ export function designOf(house) {
   if (house.design) return house.design
   if (!compiled.has(house)) compiled.set(house, compileDesign(house))
   return compiled.get(house)
+}
+
+// ---- Standard built-in plans (shared with the region builder) ---------------------
+
+const DEFAULT_FLOORS = { modern: 2, europe: 2, japan: 1, danchi: 4, mansion: 6, office: 6, brutal: 1, shop: 1 }
+const unitName = (index) => '123456789abcdefghijklmnopqrstuvwxyz'[index % 35]
+
+function planGrid(width, depth) {
+  const cells = Array.from({ length: depth }, () => Array(width).fill('.'))
+  const units = Array.from({ length: depth }, () => Array(width).fill('0'))
+  const inside = (x, z) => x >= 0 && z >= 0 && x < width && z < depth
+  const plan = {
+    fill(x0, z0, x1, z1, code, unit) {
+      for (let z = z0; z <= z1; z++) {
+        for (let x = x0; x <= x1; x++) {
+          if (!inside(x, z)) continue
+          cells[z][x] = code
+          if (unit !== undefined) units[z][x] = String(unit)
+        }
+      }
+      return plan
+    },
+    stamp(x, z, rows, { unit, flip = false } = {}) {
+      rows.forEach((row, dz) => {
+        [...(flip ? [...row].reverse().join('') : row)].forEach((code, dx) => {
+          if (code === ' ' || !inside(x + dx, z + dz)) return
+          cells[z + dz][x + dx] = code
+          if (unit !== undefined) units[z + dz][x + dx] = String(unit)
+        })
+      })
+      return plan
+    },
+    text: () => cells.map((row) => row.join('')).join(''),
+    units: () => units.map((row) => row.join('')).join(''),
+  }
+  return plan
+}
+
+const HOUSE = {
+  ground: ['UUSSKKKK', 'UUSSKKKK', 'NNSSDDDD', 'NNHHDDDD', 'THHLLLLL', 'TGGLLLLL', 'RGGLLLLL', '........'],
+  upper: ['EESSTPPP', 'EESSTPPP', 'EESSHPPP', 'HHHHHRRR', 'PPPPBBBB', 'PPPPBBBB', 'PPPPBBBB', 'VVVVVVVV'],
+}
+
+const JAPANESE = {
+  ground: ['UUNTKKKK', 'UUNTKKKK', 'HHHHDDDD', 'SSHWWWWR', 'SSHWWWWR', 'GGHWWWWR', 'GGHYYYYY', '........'],
+  upper: ['EETRWWWW', 'EETRWWWW', 'HHHHWWWW', 'SSHBBBBR', 'SSHBBBBR', 'PPHBBBBR', 'PPHVVVVV', '........'],
+}
+
+function housePlan(style, width, depth, level, count, variant) {
+  const plan = planGrid(width, depth)
+  const drawing = style === 'japan' ? JAPANESE : HOUSE
+  const flip = variant % 2 === 1
+  const x = width >= 24 ? 8 : width >= 16 && flip ? 8 : 0
+  const z = depth >= 16 ? depth - 15 : 0
+  let rows = level === 0 ? drawing.ground : drawing.upper
+  if (count === 1) rows = rows.map((row) => row.replaceAll('S', 'E'))
+  plan.stamp(x, z, rows, { flip })
+  if (level === 0) {
+    if (depth >= 16) plan.fill(flip ? x + 1 : x + 4, depth - 6, flip ? x + 3 : x + 6, depth - 1, 'J')
+    else if (width >= 16) plan.fill(x ? 2 : width - 5, 2, x ? 4 : width - 3, 7, 'J')
+  }
+  return plan
+}
+
+const DANCHI = {
+  pair: {
+    rows: ['KKKNUUSSSUUNKKKK', 'KKKNUUSSSUUNKKKK', 'DDDHTTSSSTTHDDDD', 'DDDHHGHHHGHHDDDD',
+      'WWWWwwwRRwwwRWWW', 'WWWWwwwRRwwwRWWW', 'WWWWwwwEEwwwRWWW', 'VVVVVVVVVVVVVVVV'],
+    units: ['aaaaaa000bbbbbbb', 'aaaaaa000bbbbbbb', 'aaaaaa000bbbbbbb', 'aaaaaa000bbbbbbb',
+      'aaaaaaaaabbbbbbb', 'aaaaaaaaabbbbbbb', 'aaaaaaaaabbbbbbb', 'aaaaaaaaabbbbbbb'],
+  },
+  single: {
+    rows: ['SSSUUNKK', 'SSSUUNKK', 'SSSTHDDD', 'HHHGHDDD', 'wwwHHWWW', 'wwwRRWWW', 'wwwRRWWW', 'VVVVVVVV'],
+    units: ['000aaaaa', '000aaaaa', '000aaaaa', '000aaaaa', 'aaaaaaaa', 'aaaaaaaa', 'aaaaaaaa', 'aaaaaaaa'],
+  },
+}
+
+function stampFlats(plan, x, z, { rows, units }, firstUnit) {
+  const names = [...new Set(units.join('').replaceAll('0', ''))].sort()
+  plan.stamp(x, z, rows, { unit: 0 })
+  units.forEach((row, dz) => [...row].forEach((name, dx) => {
+    if (name !== '0') plan.fill(x + dx, z + dz, x + dx, z + dz, rows[dz][dx], unitName(firstUnit + names.indexOf(name)))
+  }))
+  return names.length
+}
+
+function danchiPlan(width, depth) {
+  const plan = planGrid(width, depth)
+  const z = Math.max(0, depth - 8 - (depth >= 16 ? 7 : 0))
+  let unit = 0
+  let x = 0
+  for (; x + 16 <= width; x += 16) unit += stampFlats(plan, x, z, DANCHI.pair, unit)
+  if (x + 8 <= width) stampFlats(plan, x, z, DANCHI.single, unit)
+  return plan
+}
+
+const FLATS = {
+  wide: ['BBBGPPP', 'BBBHPPP', 'BBBHPPP', 'BBBHPPP', 'UUNHTTR', 'UUNHEEE', 'KKKHEEE', 'KKKDRRR', 'LLLDWWW', 'LLLDWWW', 'LLLDWWW', 'LLLDWWW', 'VVVVVVV', 'VVVVVVV'],
+  narrow: ['BBBGPP', 'BBBHPP', 'BBBHPP', 'BBBHPP', 'UUNHTT', 'UUNHEE', 'KKKHEE', 'KKKDRR', 'LLLDWW', 'LLLDWW', 'LLLDWW', 'LLLDWW', 'VVVVVV', 'VVVVVV'],
+  studio: ['UUGKKK', 'UUHKKK', 'TTHLLL', 'LLLLLL', 'LLLLLL', 'LLLLLL', 'VVVVVV'],
+}
+
+function mansionPlan(width, depth, level) {
+  const plan = planGrid(width, depth)
+  const deep = depth >= 16
+  const corridor = deep ? 2 : 1
+  const last = corridor + (deep ? 13 : 6)
+  const bays = width >= 24 ? [deep ? 'wide' : 'studio', deep ? 'wide' : 'studio', 'core', deep ? 'narrow' : 'studio']
+    : width >= 16 ? [deep ? 'narrow' : 'studio', 'core', deep ? 'narrow' : 'studio'] : ['stairs', deep ? 'narrow' : 'studio']
+  let x = 0
+  let unit = 0
+  let lobby = false
+  for (const [index, bay] of bays.entries()) {
+    if (bay === 'core') {
+      plan.fill(x, corridor, x + 1, corridor + 2, 'X', 0).fill(x + 2, corridor, x + 3, corridor + 4, 'S', 0)
+      x += 4
+    } else if (bay === 'stairs') {
+      plan.fill(x, corridor, x + 1, corridor + 3, 'S', 0)
+      x += 2
+    } else {
+      const rows = FLATS[bay]
+      const wide = rows[0].length
+      if (level === 0 && !lobby && bays[index - 1] && bays[index - 1] !== bay) {
+        lobby = true
+        plan.fill(x, corridor, x + wide - 1, last, 'A', 0)
+        if (deep) plan.fill(x + 2, corridor, x + wide - 1, corridor + 5, 'E', 0)
+      } else plan.stamp(x, corridor, rows, { unit: unitName(unit++), flip: index > 0 && bays[index - 1] !== bay })
+      x += wide
+    }
+  }
+  plan.fill(0, 0, x - 1, corridor - 1, 'C', 0)
+  if (level === 0 && depth >= 24) plan.fill(1, depth - 6, width - 2, depth - 1, 'J')
+  return plan
+}
+
+function officePlan(width, depth, level) {
+  const plan = planGrid(width, depth).fill(0, 0, width - 1, depth - 1, level ? 'O' : 'M')
+  plan.fill(0, 0, 1, 2, 'X').fill(2, 0, 3, 4, 'S').fill(4, 0, 5, 1, 'T').fill(6, 0, 7, 1, 'E')
+  return plan
+}
+
+export function defaultPlan(style, w, d, count = DEFAULT_FLOORS[style] ?? 2, variant = 0) {
+  const width = CELLS * w
+  const depth = CELLS * d
+  const plans = Array.from({ length: count }, (_, level) => {
+    if (style === 'danchi') return danchiPlan(width, depth)
+    if (style === 'mansion') return mansionPlan(width, depth, level)
+    if (style === 'office') return officePlan(width, depth, level)
+    if (style === 'brutal') return planGrid(width, depth)
+    return housePlan(style, width, depth, level, count, variant)
+  })
+  const units = plans.map((plan) => plan.units())
+  return { floors: plans.map((plan) => plan.text()), ...(units.some((row) => /[^0]/.test(row)) ? { units } : {}) }
+}
+
+// Narrow 3-storey urban pencil house (都市型狭小住宅), ~4.55–5.46 m wide.
+const PENCIL = {
+  ground: ['.UUTSS..', '.NNKSS..', '.NNKKH..', '.LLLLH..', '.LLLLG..', '.LLLLG..', '........', '........'],
+  middle: ['.EEESS..', '.DDDSS..', '.DDDKK..', '.LLLLL..', '.LLLLL..', '.LLLLL..', '.VVVVV..', '........'],
+  top: ['.BBBSS..', '.BBBSS..', '.BBBHH..', '.PPPHH..', '.PPPPR..', '.PPPPR..', '.VVVVV..', '........'],
+}
+
+// Low-rise walk-up wooden/light-steel apartment (木造・軽量鉄骨アパート) on a 2x1 lot (14.56 x 7.28 m).
+const APART_ROW = {
+  rows: [
+    'AACCCCCCCCCCCCCC',
+    'SSGGTTTGGTTTGGTT',
+    'SSKKHHNKKHHNKKHH',
+    'SSKKUUUKKUUUKKUU',
+    'EELLLLLLLLLLLLLL',
+    'EELLLLLLLLLLLLLL',
+    '..VVVVVVVVVVVVVV',
+    '................',
+  ],
+  units: [
+    '0000000000000000',
+    '00aaaaabbbbbcccc',
+    '00aaaaabbbbbcccc',
+    '00aaaaabbbbbcccc',
+    '00aaaaabbbbbcccc',
+    '00aaaaabbbbbcccc',
+    '00aaaaabbbbbcccc',
+    '0000000000000000',
+  ],
+}
+
+// Ground-floor shopfront with residence on upper floors (店舗併用住宅).
+const SHOPHOUSE = {
+  ground: ['.EETSS..', '.KKKSS..', '.KKKHH..', '.MMMMM..', '.MMMMM..', '.MMMMM..', '.MMMMM..', '........'],
+  upper: ['.UUTSS..', '.NNKSS..', '.LLDDH..', '.LLLLB..', '.LLLLB..', '.VVVVV..', '........', '........'],
+}
+
+// Compact traditional Japanese townhouse / machiya (和風町家・コンパクト和風).
+const MACHIYA = {
+  ground: ['.UUTKK..', '.NNTHK..', '.SSSHD..', '.SSWWW..', '.GGWWW..', '.GGYYY..', '........', '........'],
+  upper: ['.EETRR..', '.SSSHR..', '.SSSHW..', '.BBBBW..', '.BBBBW..', '.VVVVV..', '........', '........'],
+}
+
+// Upper-middle spacious family residence with L-recessed entrance (~10.0 x 8.2 m, w=2, d=2).
+const LARGE_HOUSE = {
+  ground: [
+    '..UUUUNNKKKKK...',
+    '..UUUUNNKKKKK...',
+    '..SSSTHHDDDDD...',
+    '..SSSTHHDDDDD...',
+    '..RRRHHHLLLLL...',
+    '..RRRGGHLLLLL...',
+    '..RRRGGHLLLLL...',
+    '....HHHHWWWWW...',
+    '....VVVVWWWWW...',
+  ],
+  upper: [
+    '..EEETBBBBBPP...',
+    '..EEETBBBBBPP...',
+    '..SSSHBBBBBPP...',
+    '..SSSHHHHHHPP...',
+    '..PPPPHRRRbbb...',
+    '..PPPPHRRRbbb...',
+    '....VVVVVVbbb...',
+    '....VVVVVVVVV...',
+  ],
+}
+
+// Grand multi-wing residence (豪邸) with recessed courtyard & wrap balcony (~13.6 x 10.0 m, w=2, d=2).
+const ESTATE_MANSION = {
+  ground: [
+    '.UUUUUNNKKKKKKK.',
+    '.UUUUUNNKKKKKKK.',
+    '.SSSTTHHDDDDDDD.',
+    '.SSSTTHHDDDDDDD.',
+    '.RRRRRHHLLLLLLL.',
+    '.RRRRRHHLLLLLLL.',
+    '.WWWWGGGLLLLLLL.',
+    '.WWWWGGGLLLLLLL.',
+    '.WWWWWWWYYYYYY..',
+    '.WWWWWWWYYYYYY..',
+    '.VVVVV..VVVVVV..',
+  ],
+  upper: [
+    '.EEEETBBBBBPPPP.',
+    '.EEEETBBBBBPPPP.',
+    '.SSSTHBBBBBPPPP.',
+    '.SSSTHHHHHHPPPP.',
+    '.RRRRHbbbbRRRPP.',
+    '.RRRRHbbbbRRRPP.',
+    '.PPPPHbbbbRRRPP.',
+    '.PPPPHbbbbVVVVV.',
+    '.VVVVV....VVVVV.',
+  ],
+}
+
+export function extraPlan(kind, w = 1, d = 1, count = 2, variant = 0) {
+  const width = CELLS * w
+  const depth = CELLS * d
+  const flip = variant % 2 === 1
+  const plans = Array.from({ length: count }, (_, level) => {
+    const plan = planGrid(width, depth)
+    if (kind === 'estate' && w >= 2 && d >= 2) {
+      let rows = level === 0 ? ESTATE_MANSION.ground : ESTATE_MANSION.upper
+      if (count === 1) rows = ESTATE_MANSION.ground.map((r) => r.replaceAll('S', 'E'))
+      plan.stamp(0, 2, rows, { flip })
+      return plan
+    }
+    if (kind === 'large' && w >= 2 && d >= 2) {
+      let rows = level === 0 ? LARGE_HOUSE.ground : LARGE_HOUSE.upper
+      if (count === 1) rows = LARGE_HOUSE.ground.map((r) => r.replaceAll('S', 'E'))
+      plan.stamp(0, 3, rows, { flip })
+      return plan
+    }
+    if (kind === 'apart') {
+      if (w >= 2) {
+        stampFlats(plan, 0, 0, { rows: APART_ROW.rows, units: APART_ROW.units }, 0)
+      } else {
+        stampFlats(plan, 0, 0, {
+          rows: APART_ROW.rows.map((r) => r.slice(0, 7)),
+          units: APART_ROW.units.map((u) => u.slice(0, 7)),
+        }, 0)
+      }
+      return plan
+    }
+    if (kind === 'pencil') {
+      let rows = level === 0 ? PENCIL.ground : level === count - 1 && count >= 3 ? PENCIL.top : PENCIL.middle
+      if (count === 1) rows = PENCIL.ground.map((r) => r.replaceAll('S', 'E'))
+      plan.stamp(0, 0, rows, { flip })
+      return plan
+    }
+    if (kind === 'shophouse') {
+      let rows = level === 0 ? SHOPHOUSE.ground : SHOPHOUSE.upper
+      if (count === 1) rows = SHOPHOUSE.ground.map((r) => r.replaceAll('S', 'E'))
+      plan.stamp(0, 0, rows, { flip })
+      return plan
+    }
+    if (kind === 'machiya') {
+      let rows = level === 0 ? MACHIYA.ground : MACHIYA.upper
+      if (count === 1) rows = MACHIYA.ground.map((r) => r.replaceAll('S', 'E'))
+      plan.stamp(0, 0, rows, { flip })
+      return plan
+    }
+    return housePlan('modern', width, depth, level, count, variant)
+  })
+  const units = plans.map((plan) => plan.units())
+  return { floors: plans.map((plan) => plan.text()), ...(units.some((row) => /[^0]/.test(row)) ? { units } : {}) }
 }

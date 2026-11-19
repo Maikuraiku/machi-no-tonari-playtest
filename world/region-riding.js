@@ -8,6 +8,11 @@ const SPAN = CAR.length + CAR.gap
 const GANGWAY = SPAN / 2
 const DOOR_HALF = CAR.doorWidth / 2 - BODY
 const INSIDE = HALF - BODY - 0.1
+// Additional inward margin when riding so the passenger's first-person eye camera (`here.y + eye`,
+// near plane 0.1 m) never touches or sees through the car's side window glass, mullions or ceiling.
+const CABIN_SIDE = Math.min(0.98 - BODY, HALF - BODY - 0.24)
+const CABIN_DOOR = HALF - BODY - 0.19
+const CABIN_END = LONG - 0.36 - BODY
 const GATE = PLATFORM.edge + BODY + 0.055
 const openAt = (state, platform) => state?.phase === 'dwell' && state.doors > 0.85
   && state.way === platform.sign && state.stop.index === platform.stop.index
@@ -22,8 +27,8 @@ function alongPlatform(platform, x, z) {
 }
 
 function insideCar(train, index, x, z) {
-  if (Math.abs(x) <= 0.98 - BODY && Math.abs(z) <= LONG - 0.3 - BODY) return true
-  if (Math.abs(x) <= INSIDE && CAR.doors.some((door) => Math.abs(z - door) <= 0.9 - BODY)) return true
+  if (Math.abs(x) <= CABIN_SIDE && Math.abs(z) <= CABIN_END) return true
+  if (Math.abs(x) <= CABIN_DOOR && CAR.doors.some((door) => Math.abs(z - door) <= 0.9 - BODY)) return true
   return Math.abs(x) <= 0.55 - BODY && Math.abs(z) >= LONG - 0.7 && Math.abs(z) <= GANGWAY + 0.14
     && Boolean(train.cars[index + Math.sign(z)])
 }
@@ -47,7 +52,7 @@ export function createRegionRiding(lines) {
           const offset = along * sign - car.offset
           const door = doorway(offset)
           if (door === undefined || Math.abs(door + car.offset) + CAR.doorWidth / 2 >= PLATFORM.length / 2) continue
-          return { entry, train, car: car.index, x: sign * (INSIDE - 0.03), z: offset }
+          return { entry, train, car: car.index, x: sign * (CABIN_DOOR - 0.04), z: offset }
         }
       }
     }
@@ -74,7 +79,7 @@ export function createRegionRiding(lines) {
     const side = train.state.way
     const platform = entry.platforms.find((item) => openAt(train.state, item))
     const v = (car.offset + ride.z + sz) * side
-    if (platform && sx * side > 0 && (ride.x + sx) * side > INSIDE && doorway(ride.z + sz) !== undefined
+    if (platform && sx * side > 0 && (ride.x + sx) * side > CABIN_DOOR && doorway(ride.z + sz) !== undefined
       && Math.abs(v) < PLATFORM.length / 2 - BODY && doorway(v, doorOffsets(train.cars.length)) !== undefined) {
       const { spot } = platform
       const u = PLATFORM.edge + BODY + 0.18

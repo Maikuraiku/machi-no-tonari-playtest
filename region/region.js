@@ -56,7 +56,7 @@ export function generateRegion({ seed = 1, size = REGION_SIZE } = {}, progress =
   city.landPrice = simulateLandPrice(terrain, city, rail, { seed })
 
   progress('生活道路と1m地形の準備', 0.96)
-  const blocks = superblocks(terrain, city, rail)
+  const blocks = superblocks(terrain, city, rail, seed)
   const roadIndex = segmentIndex(size, 200)
   for (const link of city.roads.links) {
     for (let k = 2; k < link.points.length; k += 2) {

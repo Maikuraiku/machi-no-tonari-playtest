@@ -193,14 +193,34 @@ export function renderTile(region, layer, level, tx, tz, rgba = new Uint8Clamped
           break
         case 'use':
           copy(color, detail ? YARD_RGB[use] : USE_RGB[use])
-          if (detail && (use === USE.FIELD || use === USE.PADDY)) {
-            const angle = city.fieldAngle?.[index] ?? 0
-            const across = -Math.sin(angle) * x + Math.cos(angle) * z
-            const strip = Math.sin(across * (Math.PI * 2 / (use === USE.FIELD ? 14 : 24)))
-            const delta = strip > 0.75 ? -9 : strip < -0.5 ? 5 : 0
-            color[0] = Math.max(0, Math.min(255, color[0] + delta))
-            color[1] = Math.max(0, Math.min(255, color[1] + delta))
-            color[2] = Math.max(0, Math.min(255, color[2] + delta * 0.7))
+          if (detail) {
+            if (use === USE.FIELD || use === USE.PADDY) {
+              const angle = city.fieldAngle?.[index] ?? 0
+              const across = -Math.sin(angle) * x + Math.cos(angle) * z
+              const along = Math.cos(angle) * x + Math.sin(angle) * z
+              const period = use === USE.FIELD ? 12 : 24
+              const strip = Math.sin(across * (Math.PI * 2 / period))
+              const bund = use === USE.PADDY && (Math.abs(Math.sin(across * (Math.PI / 22))) > 0.965 || Math.abs(Math.sin(along * (Math.PI / 38))) > 0.972)
+              const delta = bund ? -18 : strip > 0.72 ? -10 : strip < -0.5 ? 6 : 0
+              color[0] = Math.max(0, Math.min(255, color[0] + delta))
+              color[1] = Math.max(0, Math.min(255, color[1] + delta))
+              color[2] = Math.max(0, Math.min(255, color[2] + delta * 0.7))
+            } else if (use === USE.FOREST || use === USE.GREEN) {
+              const canopy = fbm(region.seed + 821, x / 11, z / 11, 2)
+              const d = canopy * 18
+              color[0] = Math.max(0, Math.min(255, color[0] + d * 0.75))
+              color[1] = Math.max(0, Math.min(255, color[1] + d))
+              color[2] = Math.max(0, Math.min(255, color[2] + d * 0.6))
+            } else if (use === USE.RIVERBED) {
+              const bar = fbm(region.seed + 823, x / 28, z / 28, 2)
+              if (bar > 0.16) {
+                // Gravel and sand bars (砂州・礫河原) along the floodplain.
+                const t = Math.min(1, (bar - 0.16) * 2.4)
+                color[0] = color[0] * (1 - t) + 216 * t
+                color[1] = color[1] * (1 - t) + 210 * t
+                color[2] = color[2] * (1 - t) + 194 * t
+              }
+            }
           }
           break
         case 'price': {
@@ -239,9 +259,15 @@ export function renderTile(region, layer, level, tx, tz, rgba = new Uint8Clamped
       }
       if (wet) {
         copy(color, USE_RGB[USE.WATER])
+        if (detail) {
+          const ripple = Math.sin(x * 0.28 + z * 0.19) * Math.cos(x * 0.14 - z * 0.25)
+          color[0] = Math.max(0, Math.min(255, color[0] + ripple * 11))
+          color[1] = Math.max(0, Math.min(255, color[1] + ripple * 12))
+          color[2] = Math.max(0, Math.min(255, color[2] + ripple * 14))
+        }
         if (water && water[p] === 2) {
-          color[0] *= 0.92
-          color[1] *= 0.96
+          color[0] *= 0.91
+          color[1] *= 0.95
         }
       }
       // Close in, the retaining walls of terraced lots and the banks of streams are steep enough
@@ -268,14 +294,16 @@ export function tileFeatures(region, layer, tile) {
   const streets = streetsIn(region, x0 - margin, z0 - margin, x1 + margin, z1 + margin).map((street) => {
     const [ax, az] = toPixel(street.points[0], street.points[1])
     const [bx, bz] = toPixel(street.points[2], street.points[3])
-    return { ax, az, bx, bz, width: street.width / mpp }
+    return { ax, az, bx, bz, width: street.width / mpp, kind: street.kind }
   })
   let buildings = []
   if (level >= BUILDING_LEVEL) {
     buildings = buildingsIn(region, x0 - margin, z0 - margin, x1 + margin, z1 + margin).map((building) => {
       const corners = []
       for (let k = 0; k < 8; k += 2) corners.push(...toPixel(building.corners[k], building.corners[k + 1]))
-      return { corners, floors: building.floors, use: building.use, tone: building.tone }
+      const lot = building.lot ? [building.lot[0] / mpp, building.lot[1] / mpp, building.lot[2] / mpp, building.lot[3] / mpp] : null
+      const carBay = (building.lot?.[0] ?? 0) >= 2.45
+      return { corners, lot, carBay, tier: building.tier ?? 1, floors: building.floors, use: building.use, tone: building.tone }
     })
   }
   return { streets, buildings }
@@ -297,15 +325,66 @@ export function drawFeatures(ctx, features, layer) {
   if (!features) return
   ctx.lineCap = 'round'
   const muted = layer === 'people' || layer === 'era' || layer === 'price'
-  ctx.strokeStyle = muted ? 'rgba(255,255,255,0.75)' : '#fbfaf6'
   for (const street of features.streets) {
-    ctx.lineWidth = Math.max(0.8, street.width)
+    ctx.strokeStyle = muted
+      ? 'rgba(255,255,255,0.72)'
+      : street.kind === 'alley'
+        ? '#ece7db'
+        : street.kind === 'lane'
+          ? '#f4f1e8'
+          : '#fbfaf6'
+    ctx.lineWidth = Math.max(street.kind === 'alley' ? 0.65 : 0.85, street.width)
     ctx.beginPath()
     ctx.moveTo(street.ax, street.az)
     ctx.lineTo(street.bx, street.bz)
     ctx.stroke()
   }
   ctx.lineJoin = 'miter'
+  if (!muted) {
+    for (const building of features.buildings) {
+      const lot = building.lot
+      if (!lot) continue
+      const [pL, pR, pF, pB] = lot
+      if (pL + pR + pF + pB < 0.35) continue
+      const c = building.corners
+      const w = Math.hypot(c[2] - c[0], c[3] - c[1])
+      const d = Math.hypot(c[6] - c[0], c[7] - c[1])
+      if (w < 1.5 || d < 1.5) continue
+      const ux = (c[2] - c[0]) / w, uz = (c[3] - c[1]) / w
+      const vx = (c[6] - c[0]) / d, vz = (c[7] - c[1]) / d
+      const lx0 = c[0] - ux * pL - vx * pF, lz0 = c[1] - uz * pL - vz * pF
+      const lx1 = c[2] + ux * pR - vx * pF, lz1 = c[3] + uz * pR - vz * pF
+      const lx2 = c[4] + ux * pR + vx * pB, lz2 = c[5] + uz * pR + vz * pB
+      const lx3 = c[6] - ux * pL + vx * pB, lz3 = c[7] - uz * pL + vz * pB
+      const tier = building.tier ?? 1
+      ctx.beginPath()
+      ctx.moveTo(lx0, lz0)
+      ctx.lineTo(lx1, lz1)
+      ctx.lineTo(lx2, lz2)
+      ctx.lineTo(lx3, lz3)
+      ctx.closePath()
+      ctx.fillStyle = tier === 4
+        ? 'rgba(116,154,88,0.88)'
+        : tier >= 2 || (pF + pB >= w * 0.25 && building.use === USE.LOW)
+          ? 'rgba(138,168,104,0.78)'
+          : 'rgba(202,195,180,0.68)'
+      ctx.fill()
+      if (building.carBay && pL >= 0.6) {
+        const bayD = Math.min(d + pF * 0.85, Math.max(d * 0.65, pL * 1.9))
+        ctx.beginPath()
+        ctx.moveTo(lx0, lz0)
+        ctx.lineTo(lx0 + ux * pL, lz0 + uz * pL)
+        ctx.lineTo(lx0 + ux * pL + vx * bayD, lz0 + uz * pL + vz * bayD)
+        ctx.lineTo(lx0 + vx * bayD, lz0 + vz * bayD)
+        ctx.closePath()
+        ctx.fillStyle = 'rgba(196,193,186,0.92)'
+        ctx.fill()
+      }
+      ctx.lineWidth = tier === 4 ? 0.75 : 0.42
+      ctx.strokeStyle = tier === 4 ? 'rgba(72,64,54,0.65)' : 'rgba(84,78,68,0.36)'
+      ctx.stroke()
+    }
+  }
   for (const building of features.buildings) {
     const palette = ROOF[building.use] ?? ROOF[USE.LOW]
     let fill = palette[Math.floor(building.tone * palette.length) % palette.length]
