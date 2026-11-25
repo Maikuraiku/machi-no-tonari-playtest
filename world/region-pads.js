@@ -8,7 +8,7 @@
 // - the outlines of the managed districts (丁目) along the outer edges of their cells.
 // No three.js and no DOM (tested by region-pads.test.mjs). Everything is in region metres, which
 // in a region town are scene metres: tile (tx, tz) covers x in [8tx, 8tx + 8), z in [8tz, 8tz + 8).
-import { CELL, COLUMNS, cellOfPoint, claimCells } from '../region/district-lookup.js?v=online-1794980046418'
+import { CELL, COLUMNS, cellOfPoint, claimCells } from '../region/district-lookup.js'
 
 export const TILE = 8
 // The plaza's terrace reaches this far (m) round its tile, on the sides where no other lot is as close.
@@ -285,9 +285,23 @@ export function footprintNear(c, rect, gap = LOT_GAP) {
 // The test of which generated buildings ({ corners, … }) stand in a region town. A building is
 // left out when the cell (40 m) of its middle lies in a claim managed as 'bare', or the town was
 // made without buildings (`built` false) and the cell is not in a claim managed as 'built'; when
-// it comes closer than `gap` to one of `rects` (the town's lots); and where `offLine` (the
-// monorail's land, if given) says no. `claims`: cell → claim (district-lookup.js claimIndex).
-export function buildingFilter({ claims = new Map(), built = true, rects = [], gap = LOT_GAP, offLine = null } = {}) {
+// it was individually demolished (`cleared`, array of [x, z] in metres); when it comes closer
+// than `gap` to one of `rects` (the town's lots); and where `offLine` (the monorail's land, if
+// given) says no. `claims`: cell → claim (district-lookup.js claimIndex).
+export function buildingFilter({ claims = new Map(), built = true, rects = [], gap = LOT_GAP, offLine = null, cleared = [] } = {}) {
+  let clearedGrid = null
+  if (Array.isArray(cleared) && cleared.length) {
+    clearedGrid = new Map()
+    for (const spot of cleared) {
+      if (!Array.isArray(spot) || spot.length < 2) continue
+      const gx = Math.floor(spot[0] / 16)
+      const gz = Math.floor(spot[1] / 16)
+      const key = `${gx},${gz}`
+      let list = clearedGrid.get(key)
+      if (!list) clearedGrid.set(key, list = [])
+      list.push(spot)
+    }
+  }
   return (building) => {
     const c = building.corners
     const cx = (c[0] + c[2] + c[4] + c[6]) / 4
@@ -295,9 +309,33 @@ export function buildingFilter({ claims = new Map(), built = true, rects = [], g
     const claim = cx >= 0 && cz >= 0 && cx < SIZE && cz < SIZE ? claims.get(cellOfPoint(cx, cz)) : undefined
     if (claim?.mode === 'bare') return false
     if (!built && claim?.mode !== 'built') return false
+    if (clearedGrid) {
+      const gx = Math.floor(cx / 16)
+      const gz = Math.floor(cz / 16)
+      for (let dz = -1; dz <= 1; dz++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const list = clearedGrid.get(`${gx + dx},${gz + dz}`)
+          if (!list) continue
+          for (const [px, pz] of list) {
+            if ((cx - px) ** 2 + (cz - pz) ** 2 <= 4.0 || insideQuad(c, px, pz)) return false
+          }
+        }
+      }
+    }
     for (const rect of rects) if (footprintNear(c, rect, gap)) return false
     return offLine ? Boolean(offLine(building)) : true
   }
+}
+
+export function clearedKey(cleared = []) {
+  if (!Array.isArray(cleared) || !cleared.length) return '0'
+  let hash = cleared.length * 2654435761
+  for (let i = 0; i < cleared.length; i++) {
+    const s = cleared[i]
+    hash = Math.imul(hash ^ Math.round((s?.[0] ?? 0) * 10), 0x01000193)
+    hash = Math.imul(hash ^ Math.round((s?.[1] ?? 0) * 10), 0x01000193)
+  }
+  return `${cleared.length}:${(hash >>> 0).toString(16)}`
 }
 
 // ---- Outlines of managed districts -----------------------------------------------------

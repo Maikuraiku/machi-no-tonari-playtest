@@ -639,7 +639,7 @@ export function createRegionApp({
       }
       if (Number.isFinite(snapshot.serverTime)) regionClient.sample(snapshot.serverTime)
       if (Array.isArray(town.lines)) kept = { code: snapshot.code, lines: town.lines }
-      regionClient.open(town.region.seed)
+      regionClient.open(town.region.seed, town.region.fingerprint)
       showProgress()
       check()
       goWanted()

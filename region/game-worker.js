@@ -2,20 +2,23 @@
 // line packs for making a region town, the ground along stored lines (for the piers), walkable
 // spots, the division into 丁目 as the town pins it, and the survey of a 丁目 for claiming it.
 // Each handler answers with postMessage, matched by `id`.
-import { regionFingerprint } from './fingerprint.js?v=online-1794980046418'
-import { decodeLine, encodeDivision, STEP, toBase64 } from './game-pack.js?v=online-1794980046418'
-import { REGION_VERSION } from './region.js?v=online-1794980046418'
-import { planRoutes } from './route-plan.js?v=online-1794980046418'
-import { pickSite, walkableNear } from './site.js?v=online-1794980046418'
-import { surveyDistrict } from './survey.js?v=online-1794980046418'
+import { regionFingerprint } from './fingerprint.js'
+import { decodeLine, encodeDivision, STEP, toBase64 } from './game-pack.js'
+import { REGION_VERSION } from './region.js'
+import { planRoutes } from './route-plan.js'
+import { ensureLand } from './land.js'
+import { pickSite, siteBoxes, walkableNear } from './site.js'
+import { surveyBox, surveyDistrict } from './survey.js'
 
 const routesOf = (region) => (region.routes ??= planRoutes(region))
 const SURVEYS_KEPT = 8
 
 export const GAME = {
   // Everything a new region town is made from, beginning at `district`.
-  townPack(region, { id, district, buildings = true }) {
+  async townPack(region, { id, district, buildings = true }) {
     const { packs } = routesOf(region)
+    // (The streets and buildings round the station and the 丁目's middle, from a pack's tiles.)
+    for (const box of siteBoxes(region, packs, district)) await ensureLand(region, ...box)
     const site = pickSite(region, packs, { district })
     const plan = {
       seed: region.seed,
@@ -40,7 +43,8 @@ export const GAME = {
     self.postMessage({ type: 'lineGround', id, grounds }, grounds.map((entry) => entry.ground.buffer))
   },
 
-  site(region, { id, x, z }) {
+  async site(region, { id, x, z }) {
+    await ensureLand(region, x - 70, z - 70, x + 70, z + 70)
     self.postMessage({ type: 'site', id, at: walkableNear(region, x, z) })
   },
 
@@ -60,10 +64,12 @@ export const GAME = {
   // What each tile of 丁目 `district` holds, for claiming it: its tile box and the two-bit
   // mask as base64 (survey.js). Uses the planned line packs, which are the stored ones when the
   // fingerprints match. The last few 丁目 asked about are kept, since the answer never changes.
-  survey(region, { id, district }) {
+  async survey(region, { id, district }) {
     const kept = (region.surveys ??= new Map())
     let entry = kept.get(district)
     if (!entry) {
+      const land = surveyBox(region, district)
+      if (land) await ensureLand(region, ...land)
       const { box, mask } = surveyDistrict(region, routesOf(region).packs, district)
       entry = { box, mask: toBase64(mask) }
       if (kept.size >= SURVEYS_KEPT) kept.delete(kept.keys().next().value)

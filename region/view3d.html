@@ -8,11 +8,14 @@
     html, body { width: 100%; height: 100%; margin: 0; background: #cfdde6; font: 500 14px/1.5 "Yu Gothic UI", "Hiragino Sans", "Noto Sans JP", Meiryo, system-ui, sans-serif; color: #1d2a33; }
     #view { display: block; width: 100%; height: 100%; }
     .info { position: fixed; left: 12px; top: 12px; max-width: min(380px, calc(100% - 24px)); padding: 10px 12px; border-radius: 10px; background: rgba(252, 253, 250, 0.92); box-shadow: 0 4px 14px rgba(18, 38, 48, 0.13); }
+    .dist-bar { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+    .dist-bar button { border: 1px solid #b8c9d4; background: #fff; color: #1d2a33; border-radius: 6px; padding: 3px 8px; font: inherit; font-size: 12px; cursor: pointer; }
+    .dist-bar button[aria-pressed="true"] { background: #1d4e68; color: #fff; border-color: #1d4e68; }
   </style>
 </head>
 <body>
   <canvas id="view"></canvas>
   <div class="info" id="info">読み込み中…</div>
-  <script type="module" src="./view3d.bundle.js?v=online-20261119-2"></script>
+  <script type="module" src="./view3d.bundle.js?v=online-20261125-refresh"></script>
 </body>
 </html>

@@ -1,4 +1,4 @@
-import { initScene } from "./scene.js?v=11";
+import { initScene } from "./scene.js?v=14";
 import { connectPresence } from "./presence.js?v=7";
 import { createVoice } from "./voice.js";
 import { createStudio } from "./studio.js?v=8";
@@ -15,6 +15,7 @@ const kinds = { self: "自宅", shared: "共同住宅", villa: "別荘" };
 const lotSizes = [[1, 1], [2, 1], [1, 2], [2, 2], [3, 1], [3, 2], [3, 3]];
 const cameraNames = { follow: "三人称", first: "一人称", overview: "全体" };
 const qualityNames = { low: "軽い", medium: "標準", high: "きれい" };
+const distanceNames = [[400, "400m"], [1000, "1km"], [2500, "2.5km"], [5000, "5km"], [10000, "10km"]];
 const colors = ["#dd886d", "#799da4", "#9783bc", "#b99361", "#6da98a"];
 const plaza = { x: 8, z: 7 };
 const roadCells = [];
@@ -29,6 +30,7 @@ const inviteFromUrl = new URL(location.href).searchParams.get("join") ?? "";
 const sessionKey = "machi-no-tonari:session";
 const nameKey = "machi-no-tonari:name";
 const qualityKey = "machi-no-tonari:quality";
+const distanceKey = "machi-no-tonari:distance";
 const settingsKey = "machi-no-tonari:settings";
 const savedName = () => state?.me?.name || localStorage.getItem(nameKey) || "";
 function savedRegionCode() {
@@ -57,6 +59,7 @@ let preview = null;
 let selection = null;
 // While choosing where to build: { kind, style, w, d }.
 let building = null;
+let clearingExisting = false;
 let buildChoice = { kind: "self", style: "modern", size: "1x1" };
 let selectedHouse = null;
 let planFloor = 0;
@@ -461,6 +464,13 @@ function makeScene() {
     scene = initScene($("scene"), {
       onTile: clickTile,
       onTarget: clickTarget,
+      onClearBuilding: (hit) => {
+        if (!hit || !town().region) return;
+        run(async () => {
+          await action("district", { op: "clear", x: hit.cx, z: hit.cz });
+          notify("既存の建物を削除しました。");
+        });
+      },
       onMove: reportMove,
       onPlace: enterPlace,
       onLift: (next) => { lift = next; drawActionBar(); syncVR(); },
@@ -487,6 +497,8 @@ function makeScene() {
     });
     const saved = localStorage.getItem(qualityKey);
     if (saved) scene.setQuality(saved);
+    const savedDistance = Number(localStorage.getItem(distanceKey));
+    if (Number.isFinite(savedDistance) && savedDistance >= 400) scene.setBuildingDistance?.(savedDistance);
     scene.setCamera(viewMode);
     scene.setSound?.(settings);
     scene.vr.supported().then((supported) => {
@@ -538,6 +550,11 @@ function drawActionBar() {
   if (building) {
     groups.push(`<span class="act-label">${STYLE_LABELS[building.style]}（${building.w}×${building.d}マス）を建てる場所をクリック</span>
       <button type="button" class="act" data-action="cancel-build"><kbd>Esc</kbd>やめる</button>`);
+  } else if (clearingExisting && town().region) {
+    const clearedCount = town().cleared?.length ?? 0;
+    groups.push(`<span class="act-label">${icon("trash")} 削除したい既存の建物をクリック${clearedCount ? `（削除済み ${clearedCount}棟）` : ""}</span>
+      ${clearedCount ? '<button type="button" class="act" data-action="undo-clear-existing">直前を戻す</button>' : ""}
+      <button type="button" class="act" data-action="cancel-clear-existing"><kbd>Esc</kbd>終了</button>`);
   } else if (editing()) {
     groups.push(`<span class="act-label">${selection?.target ? (selection.from ? "移動先のマスをクリック" : "道路を敷くマスをクリック") : `街の編集中：${town().shop || town().cafe ? "建物か道路" : "道路"}をクリック`}</span>
       ${selection ? '<button type="button" class="act" data-action="cancel-edit">選択を解除</button>' : ""}
@@ -608,6 +625,7 @@ function update() {
     doors: state?.doors ?? {},
     houses: (state?.houses ?? []).map((house) => ({ ...house, label: houseTitle(house) })),
     edit: editing(),
+    clearingExisting: Boolean(clearingExisting && town().region && !place),
     selected: selection?.from ?? null,
     placing: building ? { w: building.w, d: building.d } : null,
     design: designDraft,
@@ -696,7 +714,7 @@ function openPanel(tab = activeTab, open = true) {
   if (!Object.hasOwn(titles, tab)) return;
   if (activeTab !== tab && tab !== "shop") preview = null;
   if (tab !== "edit") selection = null;
-  if (tab !== "home") building = null;
+  if (tab !== "home") { building = null; if (tab !== "district") clearingExisting = false; }
   activeTab = tab;
   panelOpen = open;
   renderKey = "";
@@ -721,11 +739,11 @@ function renderPanel() {
   const node = $("panel-content");
   if (!node || !panelOpen) return;
   const me = current();
-  const key = JSON.stringify([activeTab, place, preview?.id, building, buildChoice, selection,
+  const key = JSON.stringify([activeTab, place, preview?.id, building, clearingExisting, town().cleared?.length ?? 0, buildChoice, selection,
     selectedHouse, planFloor, brush, me.owned, me.equipped, me.vrm,
     me.avatarHasAfk, me.afk, me.avatarExpressions, me.avatarExpressionValues, vrmUploading, me.coins, me.name,
     state?.layout, state?.players.map((p) => [p.id, p.name, p.online, p.muted, voice.silenced(p.id)]),
-    state?.editorIds, regionApp.panelKey(), scene?.quality(), Boolean(state), settings, transitPreview, vrReady]);
+    state?.editorIds, regionApp.panelKey(), scene?.quality(), scene?.buildingDistance?.(), Boolean(state), settings, transitPreview, vrReady]);
   // Repainting would cut a brush stroke short, so the panel waits until it ends.
   if (renderKey === key || stroke) return;
   renderKey = key;
@@ -829,6 +847,20 @@ function homes() {
       <button class="btn primary block" type="submit">${icon("pin")}<span>建てる場所を選ぶ</span></button>
     </form>
     <p class="note">自宅と別荘は鍵を渡した人だけが入れます。共同住宅は住人みんなで間取りを作ります。</p>
+    ${town().region ? `<section class="section">
+      <div class="section-title"><span>既存の建物の削除</span><span>${town().cleared?.length ? `削除済み ${town().cleared.length}棟` : ""}</span></div>
+      <div class="card">
+        ${clearingExisting
+          ? `<p class="note">削除モード中です。3D画面の既存の建物をクリックすると1棟ずつ削除できます（Escで終了）。</p>
+             ${btn("削除モードを終える", "cancel-clear-existing", "ghost block")}`
+          : `${btn(`${icon("trash")}<span>既存の建物を削除する</span>`, "toggle-clear-existing", "danger block")}
+             <p class="note">地域の街に最初からある建物をクリックして更地にできます。</p>`}
+        ${town().cleared?.length ? `<div class="row wrap">
+          ${btn(`${icon("undo")}<span>直前の削除を戻す</span>`, "undo-clear-existing", "soft small grow")}
+          ${canEdit() ? btn("すべて元に戻す", "restore-all-existing", "ghost small") : ""}
+        </div>` : ""}
+      </div>
+    </section>` : ""}
     ${mine.length ? `<section class="section"><div class="section-title"><span>自分の建物</span><span>${mine.length}</span></div>${mine.map(houseButton).join("")}</section>` : ""}
     ${others.length ? `<section class="section"><div class="section-title"><span>街の建物</span><span>${others.length}</span></div>${others.map(houseButton).join("")}</section>` : ""}`;
 }
@@ -953,6 +985,12 @@ function settingsPanel() {
       <div class="segmented" role="group" aria-label="画質" style="display:grid;grid-template-columns:repeat(3,1fr)">${Object.entries(qualityNames).map(([value, label]) =>
         `<button type="button" class="seg" data-action="quality" data-id="${value}" aria-pressed="${scene?.quality() === value}">${label}</button>`).join("")}</div>
       <p class="note">「きれい」は窓に景色が映り、影や遠くの地形・建物まで細かくなります。動きが重いときは「軽い」にしてください。</p>
+    </section>
+    <section class="section">
+      <div class="section-title"><span>建物の表示距離</span><span>${(scene?.buildingDistance?.() ?? 400) >= 1000 ? `${((scene?.buildingDistance?.() ?? 400) / 1000).toFixed(1).replace(/\.0$/, "")}km` : `${scene?.buildingDistance?.() ?? 400}m`}</span></div>
+      <div class="segmented" role="group" aria-label="建物の表示距離" style="display:grid;grid-template-columns:repeat(5,1fr)">${distanceNames.map(([value, label]) =>
+        `<button type="button" class="seg" data-action="distance" data-id="${value}" aria-pressed="${(scene?.buildingDistance?.() ?? 400) === value}">${label}</button>`).join("")}</div>
+      <p class="note">遠くの建物まで簡略化せずにそのまま表示します（最大10km）。表示距離を伸ばすと読み込みや描画の負荷が上がります。</p>
     </section>
     <section class="section">
       <div class="section-title"><span>${icon("volume")} 音</span></div>
@@ -1694,6 +1732,25 @@ const handlers = {
   "home-detail": ({ id }) => { selectedHouse = selectedHouse === id ? null : id; planFloor = 0; update(); },
   "design-home": ({ id }) => openStudio(id),
   "cancel-build": () => { building = null; update(); },
+  "toggle-clear-existing": () => {
+    if (!town().region) return;
+    building = null;
+    clearingExisting = !clearingExisting;
+    update();
+    if (clearingExisting) notify("削除したい既存の建物を3D画面でクリックしてください（Escで終了）。");
+  },
+  "cancel-clear-existing": () => { clearingExisting = false; update(); },
+  "undo-clear-existing": async () => {
+    const list = town().cleared ?? [];
+    const last = list.at(-1);
+    if (!last) return;
+    await action("district", { op: "restore", x: last[0], z: last[1] });
+    notify("直前に削除した建物を元に戻しました。");
+  },
+  "restore-all-existing": async () => {
+    await action("district", { op: "restore", all: true });
+    notify("削除した既存の建物をすべて元に戻しました。");
+  },
   "plan-floor": ({ id }) => { planFloor = Number(id); update(); },
   brush: ({ id }) => { brush = id; update(); },
   "reset-plan": async ({ id }) => {
@@ -1791,6 +1848,11 @@ const handlers = {
   quality: ({ id }) => {
     scene?.setQuality(id);
     localStorage.setItem(qualityKey, id);
+    update();
+  },
+  distance: ({ id }) => {
+    const dist = scene?.setBuildingDistance?.(Number(id)) ?? Number(id);
+    localStorage.setItem(distanceKey, String(dist));
     update();
   },
   "toggle-transit": () => {
@@ -2037,7 +2099,7 @@ document.addEventListener("change", (event) => {
 document.addEventListener("keydown", (event) => {
   if (event.target.closest("input, textarea, select") || $("dialog").open || designing()) return;
   if (event.key === "Escape") {
-    if (building || selection) { building = selection = null; update(); }
+    if (building || selection || clearingExisting) { building = selection = null; clearingExisting = false; update(); }
     else if (preview) { preview = null; update(); }
   } else if (event.key.toLowerCase() === "v" && !event.ctrlKey && !event.metaKey) {
     // V flips between walking behind the avatar and seeing through its eyes.

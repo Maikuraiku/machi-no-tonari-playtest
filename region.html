@@ -7,15 +7,24 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#f6f7f3">
-  <meta name="description" content="20km四方の世田谷風の土地を生成し、整備・人口・人の流れ・鉄道の路線計画をシミュレーションする地図。">
-  <title>地域シミュレーション｜まちのとなり</title>
-  <link rel="stylesheet" href="./region/map.css?v=online-20261119-2">
+  <meta name="description" content="20km四方の土地を5m物理地形・地質から生成し、1700年から2025年までの道路・鉄道・商業施設・商店の成り立ちを極限までシミュレーションする地図。">
+  <title>超極限 地域成り立ちシミュレーション（1700〜2025年）｜まちのとなり</title>
+  <link rel="stylesheet" href="./region/map.css?v=online-20261125-refresh">
 </head>
 <body>
   <main class="region">
     <section class="map" aria-label="地図">
       <canvas id="map"></canvas>
       <div class="map-status" id="status" role="status" hidden></div>
+      <div class="timeline-bar" id="timeline-bar" hidden>
+        <div class="timeline-top">
+          <button type="button" id="timeline-play" title="1700年〜2025年を再生">▶ 再生</button>
+          <span class="timeline-year" id="timeline-year">2025年</span>
+          <input type="range" id="timeline-slider" min="0" max="34" value="34" aria-label="シミュレーション年代">
+          <span class="timeline-kpi" id="timeline-kpi"></span>
+        </div>
+        <div class="timeline-event" id="timeline-event"></div>
+      </div>
       <div class="map-tools" role="group" aria-label="拡大と縮小">
         <button type="button" data-zoom="in" aria-label="拡大">＋</button>
         <button type="button" data-zoom="out" aria-label="縮小">－</button>
@@ -23,18 +32,18 @@
       </div>
       <div class="scale" id="scale" aria-hidden="true"><span></span><b></b></div>
       <div class="readout" id="readout" hidden></div>
-      <button type="button" class="panel-toggle" id="panel-toggle" aria-controls="panel" aria-expanded="true">数値と路線</button>
+      <button type="button" class="panel-toggle" id="panel-toggle" aria-controls="panel" aria-expanded="true">数値と歴史</button>
     </section>
 
     <aside class="panel" id="panel">
       <header class="panel-head">
         <a class="back" href="./">← 街へ戻る</a>
-        <h1>地域シミュレーション</h1>
-        <p class="lead">世田谷のような20km四方の土地を生成し、江戸期から2020年までの整備、人口、人の流れを計算して、鉄道の路線を計画します。</p>
+        <h1>地域成り立ちシミュレーション <span class="sim-badge" id="sim-badge" hidden></span></h1>
+        <p class="lead">2m開析谷・4段段丘の坂道地形から、道路構造令準拠の非直線道路、都市構造中心の鉄道、土地・価格連動の個別建築、44業種の商業盛衰までを完全架空固有名でシミュレートします。</p>
         <form id="seed-form" class="seed">
           <label for="seed">シード</label>
           <input id="seed" name="seed" value="3" autocomplete="off" maxlength="40" inputmode="text">
-          <button type="submit" class="primary">生成</button>
+          <button type="submit" class="primary">読込</button>
           <button type="button" id="random-seed">ランダム</button>
         </form>
         <div class="progress" id="progress" hidden>
@@ -43,6 +52,7 @@
         </div>
       </header>
 
+      <section class="block" id="shop-detail" hidden></section>
       <section class="block" id="district" hidden></section>
 
       <section class="block">
@@ -55,15 +65,21 @@
         <h2>重ねて描くもの</h2>
         <div class="toggles" id="toggles">
           <label><input type="checkbox" data-show="roads" checked> 幹線道路</label>
-          <label><input type="checkbox" data-show="traffic"> 道路の交通需要</label>
+          <label><input type="checkbox" data-show="trafficLaw" checked> 交通法規・信号・踏切</label>
+          <label><input type="checkbox" data-show="traffic"> 道路混雑（BPR）</label>
           <label><input type="checkbox" data-show="streams" checked> 川・水路</label>
+          <label><input type="checkbox" data-show="springs"> 湧水点（ハケ）</label>
           <label><input type="checkbox" data-show="rail" checked> 鉄道</label>
           <label><input type="checkbox" data-show="labels" checked> 駅名</label>
-          <label><input type="checkbox" data-show="desire"> 人の流れ（希望線）</label>
+          <label><input type="checkbox" data-show="slopes" checked> 坂道（坂名・勾配）</label>
+          <label><input type="checkbox" data-show="urbanNodes" checked> 都市核・急行駅</label>
+          <label><input type="checkbox" data-show="shops" checked> 商業施設・商店</label>
           <label><input type="checkbox" data-show="districts" checked> 地区（町・丁目）</label>
+          <label><input type="checkbox" data-show="desire"> 人の流れ</label>
         </div>
       </section>
 
+      <section class="block" id="commerce" hidden></section>
       <section class="block" id="summary" hidden></section>
       <section class="block" id="eras" hidden></section>
       <section class="block" id="lines" hidden></section>
@@ -80,10 +96,10 @@
       </section>
 
       <footer class="block foot">
-        <p>座標は北西の角を原点に、東へ x、南へ z（メートル）。大きな地形は20m格子、拡大すると1m単位で計算した地面と、生活道路・建物を描きます。</p>
+        <p>座標は北西を原点に東へ x、南へ z（メートル）。</p>
       </footer>
     </aside>
   </main>
-  <script type="module" src="./region/map.bundle.js?v=online-20261119-2" onerror="var s=document.getElementById('status');s.hidden=false;s.classList.add('error');s.textContent='地図の部品を読み込めませんでした。ページを読み込み直してください。'"></script>
+  <script type="module" src="./region/map.bundle.js?v=online-20261125-refresh" onerror="var s=document.getElementById('status');s.hidden=false;s.classList.add('error');s.textContent='地図の部品を読み込めませんでした。ページを読み込み直してください。'"></script>
 </body>
 </html>

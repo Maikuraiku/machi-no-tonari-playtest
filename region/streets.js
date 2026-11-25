@@ -4,22 +4,21 @@
 // its own contour/parcel orientation and organic staggered streets. High-land-price urban zones
 // subdivide tightly with narrow Tokyo wall-to-wall gaps (民法234条緩和・準防火密着) and minimal vacancy.
 import { BUILT_USES, ROAD_WIDTH, USE } from './develop.js'
-import { chaikin, crossing, lengthOf, resample, segmentIndex } from './geometry.js'
+import { chaikin, crossing, lengthOf, resample, segmentIndex, simplify } from './geometry.js'
 import { fbm, hash3 } from './noise.js'
 import { LAND } from './terrain.js'
 
-// Block shapes by the use that dominates a tract: lattice spacing across (a) and along (b),
-// organic wobble, cross-street drop rate (creates T-junctions without hollowing long frontages),
-// rare longitudinal drop rate, and typical Japanese local street widths (建築基準法第42条 4m前後).
+// Block shapes by dominant use: realistic Japanese 4m+ local road widths (建築基準法第42条),
+// straight surveyed blocks for planned/modern zones, and gentle organic curves only in historic cores.
 const LATTICE = {
-  [USE.DENSE]: { a: 27, b: 56, wobble: 0.11, dropCross: 0.34, dropLong: 0.02, width: 3.4 },
-  [USE.LOW]: { a: 29, b: 68, wobble: 0.09, dropCross: 0.28, dropLong: 0.01, width: 3.8 },
-  [USE.MID]: { a: 52, b: 90, wobble: 0.07, dropCross: 0.20, dropLong: 0.03, width: 5.5 },
-  [USE.HIGH]: { a: 68, b: 105, wobble: 0.05, dropCross: 0.12, dropLong: 0.02, width: 7.5 },
-  [USE.COMMERCIAL]: { a: 34, b: 62, wobble: 0.08, dropCross: 0.20, dropLong: 0.02, width: 4.8 },
-  [USE.INDUSTRIAL]: { a: 74, b: 130, wobble: 0.05, dropCross: 0.15, dropLong: 0.05, width: 8.0 },
-  [USE.PUBLIC]: { a: 54, b: 90, wobble: 0.06, dropCross: 0.14, dropLong: 0.04, width: 6.0 },
-  planned: { a: 36, b: 82, wobble: 0.04, dropCross: 0.08, dropLong: 0.02, width: 5.5 },
+  [USE.DENSE]: { a: 28, b: 60, wobble: 0.022, dropCross: 0.28, dropLong: 0, width: 4.2 },
+  [USE.LOW]: { a: 32, b: 72, wobble: 0.016, dropCross: 0.24, dropLong: 0, width: 4.8 },
+  [USE.MID]: { a: 52, b: 92, wobble: 0.010, dropCross: 0.18, dropLong: 0, width: 5.8 },
+  [USE.HIGH]: { a: 68, b: 108, wobble: 0.0, dropCross: 0.12, dropLong: 0, width: 7.5 },
+  [USE.COMMERCIAL]: { a: 36, b: 64, wobble: 0.012, dropCross: 0.18, dropLong: 0, width: 5.5 },
+  [USE.INDUSTRIAL]: { a: 74, b: 130, wobble: 0.0, dropCross: 0.14, dropLong: 0, width: 8.0 },
+  [USE.PUBLIC]: { a: 56, b: 92, wobble: 0.0, dropCross: 0.14, dropLong: 0, width: 6.0 },
+  planned: { a: 36, b: 84, wobble: 0.0, dropCross: 0.08, dropLong: 0, width: 6.0 },
 }
 
 // Lots: baseline suburban frontage, setback, floors, site coverage bias, max building depth.
@@ -34,6 +33,7 @@ const LOTS = {
 
 const SNAP_KEN = 0.455
 const snapKen = (v, min = 3.64, max = 13.65) => Math.max(min, Math.min(max, Math.round(v / SNAP_KEN) * SNAP_KEN))
+const floorKen = (v, min = 3.64, max = 13.65) => Math.max(min, Math.min(max, Math.floor((v + 1e-4) / SNAP_KEN) * SNAP_KEN))
 const priceRatio = (price) => Math.max(0, Math.min(1, ((price || 48) - 45) / 115))
 
 function unitHash(seed, a, b) {
@@ -98,15 +98,17 @@ function summarizeTract(terrain, city, cells, cellCount, seed, tractSeedX, tract
     }
   }
   const hilly = Math.hypot(gx, gz) / n / (2 * cell) > 0.05
-  const baseAngle = hilly ? Math.atan2(gz, gx) + Math.PI / 2 : 0.5 * Math.atan2(2 * cxz, cxx - czz)
+  // Flat residential blocks follow solar cardinal N-S / E-W orientation unless clearly elongated along an arterial corridor.
+  const axisAngle = Math.abs(cxx - czz) < (cxx + czz) * 0.28 ? 0 : 0.5 * Math.atan2(2 * cxz, cxx - czz)
+  const baseAngle = hilly ? Math.atan2(gz, gx) + Math.PI / 2 : axisAngle
   const kind = planned > n * 0.5 ? 'planned' : dominant
   const meanEra = builtCells > 0 ? eraSum / builtCells : 4
   let angle = baseAngle
   if (kind !== 'planned' && !hilly) {
     const rotHash = unitHash(seed + 881, Math.round(tractSeedX ?? mx), Math.round(tractSeedZ ?? mz))
     const spread = dominant === USE.DENSE || dominant === USE.LOW
-      ? (meanEra <= 4.5 ? 0.42 : 0.30)
-      : dominant === USE.COMMERCIAL ? 0.22 : 0.12
+      ? (meanEra <= 3.5 ? 0.20 : 0.09)
+      : dominant === USE.COMMERCIAL ? 0.12 : 0.06
     angle += (rotHash - 0.5) * 2 * spread
   }
   const worldX = (mx + 0.5) * cell
@@ -231,7 +233,7 @@ function extractSeams(terrain, city, macroId, subId) {
       const vz = (vk - vx) / vCols
       raw.push(vx * cell, vz * cell)
     }
-    const smoothed = resample(chaikin(raw, 2), 14)
+    const smoothed = resample(chaikin(simplify(raw, 14), 2), 14)
     if (lengthOf(smoothed) < 60) return
     let minX = Infinity
     let minZ = Infinity
@@ -331,8 +333,8 @@ export function superblocks(terrain, city, rail, seed = terrain.seed ?? 0) {
     }
 
     const n = tail
-    if (n >= 110 && builtCount >= 64 && plannedCount <= n * 0.5) {
-      const targetTracts = Math.min(20, Math.max(2, Math.round(builtCount / 110)))
+    if (n >= 220 && builtCount >= 130 && plannedCount <= n * 0.5) {
+      const targetTracts = Math.min(8, Math.max(2, Math.round(builtCount / 220)))
       const seeds = []
       const builtIdx = []
       for (let k = 0; k < n; k++) {
@@ -341,7 +343,7 @@ export function superblocks(terrain, city, rail, seed = terrain.seed ?? 0) {
       }
       builtIdx.sort((a, b) => a - b)
 
-      for (const minDistCells of [8.5, 6.2, 4.0]) {
+      for (const minDistCells of [11.0, 8.0, 5.0]) {
         const stride = Math.max(1, Math.floor(builtIdx.length / (targetTracts * 2)))
         const minDist2 = minDistCells * minDistCells
         for (let pass = 0; pass < stride && seeds.length < targetTracts; pass++) {
@@ -370,8 +372,8 @@ export function superblocks(terrain, city, rail, seed = terrain.seed ?? 0) {
           let px = (x + 0.5) * cell
           let pz = (z + 0.5) * cell
           if (warpLarge || BUILT_USES.has(city.use[at])) {
-            px += 26 * fbm(seed + 41, px / 170, pz / 170, 1)
-            pz += 26 * fbm(seed + 42, px / 170, pz / 170, 1)
+            px += 10 * fbm(seed + 41, px / 220, pz / 220, 1)
+            pz += 10 * fbm(seed + 42, px / 220, pz / 220, 1)
           }
           let bestIdx = 0
           let bestD2 = Infinity
@@ -408,16 +410,15 @@ function latticeOf(seed, index, block) {
   const uz = Math.sin(block.angle)
   const vx = -uz
   const vz = ux
-  const bendMacro = block.kind === 'planned' ? 0.10 * shape.b : 0.26 * shape.b
-  const bendLocal = block.kind === 'planned' ? 1.2 : 5.5
+  const bendMacro = block.kind === 'planned' ? 0.03 * shape.b : 0.08 * shape.b
   const node = (i, j) => {
     const bx = block.x + i * shape.a * ux + j * shape.b * vx
     const bz = block.z + i * shape.a * uz + j * shape.b * vz
     const h = hash3(seed + index, i, j)
-    const jx = ((h & 1023) / 1023 - 0.5) * 2 * shape.wobble * shape.a
-    const jz = (((h >>> 10) & 1023) / 1023 - 0.5) * 2 * shape.wobble * shape.a
-    const wx = bendMacro * fbm(seed + 77, bx / 650, bz / 650, 1) + bendLocal * fbm(seed + 177, bx / 135, bz / 135, 1)
-    const wz = bendMacro * fbm(seed + 78, bx / 650, bz / 650, 1) + bendLocal * fbm(seed + 178, bx / 135, bz / 135, 1)
+    const jx = shape.wobble > 0 ? ((h & 1023) / 1023 - 0.5) * 2 * shape.wobble * shape.a : 0
+    const jz = shape.wobble > 0 ? (((h >>> 10) & 1023) / 1023 - 0.5) * 2 * shape.wobble * shape.a : 0
+    const wx = bendMacro * fbm(seed + 77, bx / 720, bz / 720, 1)
+    const wz = bendMacro * fbm(seed + 78, bx / 720, bz / 720, 1)
     return [bx + jx + wx, bz + jz + wz]
   }
   const toLattice = (x, z) => {
@@ -443,12 +444,11 @@ function latticeOf(seed, index, block) {
   return { shape, node, toLattice, cacheFor }
 }
 
-// Cross-streets (`direction === 1`) use checkerboard drop to form T-junctions; long streets (`direction === 2`) stay intact.
 function edgeDropped(seed, block, lattice, i, j, direction) {
   if (direction === 2) {
-    return unitHash(seed + block, i * 2 + 2, j) < lattice.shape.dropLong
+    return lattice.shape.dropLong > 0 && unitHash(seed + block, i * 2 + 2, j) < lattice.shape.dropLong
   }
-  const rate = lattice.shape.dropCross * (lattice.shape.wobble >= 0.08 ? (((i + j) & 1) ? 1.55 : 0.45) : 1)
+  const rate = lattice.shape.dropCross * (lattice.shape.wobble >= 0.02 ? (((i + j) & 1) ? 1.45 : 0.55) : 1)
   return unitHash(seed + block, i * 2 + 1, j) < rate
 }
 
@@ -537,23 +537,26 @@ function cellFineLane(region, seed, block, lattice, getNode, i, j) {
   let to
   let culDeSac = false
   if (isAlley && ((h >>> 10) & 3) !== 0 && !drop0 && !drop1) {
-    const tMid = 0.42 + (((h >>> 12) & 255) / 255) * 0.16
+    const tMid = 0.44 + (((h >>> 12) & 255) / 255) * 0.12
     from = at(0, tMid)
     to = at(1, tMid)
   } else {
     culDeSac = true
     const sMid = 0.45 + (((h >>> 12) & 255) / 255) * 0.10
     const fromSouth = ((h >>> 11) & 1) === 0
+    // Require the parent cross-street edge to be active so cul-de-sac lanes never float detached from roads.
+    const anchorDrop = edgeDropped(seed, block, lattice, i, fromSouth ? j : j + 1, 1)
+    if (anchorDrop) return null
     from = at(sMid, fromSouth ? 0 : 1)
     to = at(sMid, fromSouth ? 0.68 : 0.32)
   }
 
-  if (!insideCell(region, block, from[0], from[1]) && !insideCell(region, block, to[0], to[1])) return null
+  if (!insideCell(region, block, from[0], from[1]) || !insideCell(region, block, to[0], to[1])) return null
   const corners = [from[0], from[1], to[0], to[1], to[0], to[1], from[0], from[1]]
-  if (clearance(region.roadIndex, corners, (k) => ROAD_WIDTH[k] / 2) < 2) return null
-  if (clearance(region.blocks.seamIndex, corners, () => 2.4) < 1.5) return null
-  if (streamClearance(region, corners) < 2.5) return null
-  if (railClearance(region, corners) < 2) return null
+  if (clearance(region.roadIndex, corners, (k) => ROAD_WIDTH[k] / 2) < 2.5) return null
+  if (clearance(region.blocks.seamIndex, corners, () => 2.4) < 2.2) return null
+  if (streamClearance(region, corners) < 2.8) return null
+  if (railClearance(region, corners) < 2.2) return null
 
   return { points: [from[0], from[1], to[0], to[1]], width, kind, era, culDeSac }
 }
@@ -563,8 +566,8 @@ function insideCell(region, block, x, z) {
   return at >= 0 && region.blocks.id[at] === block && BUILT_USES.has(region.city.use[at])
 }
 
-// Skip lattice segments running nearly parallel and < 12 m beside a main or seam road,
-// which otherwise create unbuildable narrow slivers and inflate total asphalt area.
+// Skip longitudinal lattice segments running parallel within 8.5 m of a main or seam road,
+// which otherwise create unbuildable narrow slivers alongside arterial roads.
 function isParallelSliver(region, ax, az, bx, bz) {
   const dx = bx - ax
   const dz = bz - az
@@ -577,18 +580,18 @@ function isParallelSliver(region, ax, az, bx, bz) {
   let sliver = false
   const check = (index, getHalf) => {
     if (!index || sliver) return
-    index.near(mx, mz, 22, (seg) => {
+    index.near(mx, mz, 19, (seg) => {
       if (sliver) return
       const sdx = seg.bx - seg.ax
       const sdz = seg.bz - seg.az
       const slen = Math.hypot(sdx, sdz)
       if (slen < 1e-3) return
       const dot = Math.abs((ux * sdx + uz * sdz) / slen)
-      if (dot < 0.72) return
+      if (dot < 0.78) return
       const l2 = sdx * sdx + sdz * sdz
       const t = Math.max(0, Math.min(1, ((mx - seg.ax) * sdx + (mz - seg.az) * sdz) / l2))
       const d = Math.hypot(seg.ax + sdx * t - mx, seg.az + sdz * t - mz) - getHalf(seg.data)
-      if (d < 11.5) sliver = true
+      if (d < 8.5) sliver = true
     })
   }
   check(region.roadIndex, (k) => ROAD_WIDTH[k] * 0.5)
@@ -596,11 +599,88 @@ function isParallelSliver(region, ax, az, bx, bz) {
   return sliver
 }
 
+// Shared deterministic street-segment solver for a lattice edge `(i,j)->(i+di,j+dj)`,
+// used identically by both `streetsIn` and `buildingsIn` so every parcel fronts an actual street.
+function resolveLatticeEdges(region, seed, block, lattice, getNode, i, j, di, dj, direction) {
+  if (edgeDropped(seed, block, lattice, i, j, direction)) return []
+  const a = getNode(i, j)
+  const b = getNode(i + di, j + dj)
+  const aIn = insideCell(region, block, a[0], a[1])
+  const bIn = insideCell(region, block, b[0], b[1])
+  if (!aIn && !bIn) return []
+  if (direction === 2 && aIn && bIn && isParallelSliver(region, a[0], a[1], b[0], b[1])) return []
+
+  if (aIn !== bIn) {
+    const start = aIn ? a : b
+    const end = aIn ? b : a
+    const meet = meetRoad(region, start, end)
+    if (meet) return Math.hypot(meet[0] - start[0], meet[1] - start[1]) >= 9.0 ? [[start[0], start[1], meet[0], meet[1]]] : []
+    // Boundary cul-de-sac stopping cleanly at the edge of built residential land.
+    let lo = 0
+    let hi = 1
+    for (let s = 0; s < 6; s++) {
+      const m = (lo + hi) * 0.5
+      if (insideCell(region, block, start[0] + (end[0] - start[0]) * m, start[1] + (end[1] - start[1]) * m)) lo = m
+      else hi = m
+    }
+    const bx = start[0] + (end[0] - start[0]) * lo
+    const bz = start[1] + (end[1] - start[1]) * lo
+    return Math.hypot(bx - start[0], bz - start[1]) >= 12.0 ? [[start[0], start[1], bx, bz]] : []
+  }
+
+  const mx = (a[0] + b[0]) * 0.5
+  const mz = (a[1] + b[1]) * 0.5
+  const rad = Math.hypot(b[0] - a[0], b[1] - a[1]) * 0.6
+  let cutA = 1
+  let cutB = 1
+  const clipHit = (seg) => {
+    const hit = crossing(a[0], a[1], b[0], b[1], seg.ax, seg.az, seg.bx, seg.bz)
+    if (!hit) return
+    if (hit.t > 0.02 && hit.t < cutA) cutA = hit.t
+    if (1 - hit.t > 0.02 && 1 - hit.t < cutB) cutB = 1 - hit.t
+  }
+  region.blocks.seamIndex?.near(mx, mz, rad, clipHit)
+  region.roadIndex.near(mx, mz, rad, clipHit)
+
+  if (cutA < 0.98) {
+    const segs = []
+    if (cutA >= 0.25) {
+      const fx = a[0] + (b[0] - a[0]) * cutA, fz = a[1] + (b[1] - a[1]) * cutA
+      if (Math.hypot(fx - a[0], fz - a[1]) >= 8.5) segs.push([a[0], a[1], fx, fz])
+    }
+    if (cutB >= 0.25 && cutA + cutB < 0.98) {
+      const bx = b[0] + (a[0] - b[0]) * cutB, bz = b[1] + (a[1] - b[1]) * cutB
+      if (Math.hypot(bx - b[0], bz - b[1]) >= 8.5) segs.push([b[0], b[1], bx, bz])
+    }
+    return segs
+  }
+
+  let from = a
+  let to = b
+  if (direction === 1) {
+    const spineAlive = (si, sj) => {
+      const sa = getNode(si, sj)
+      const sb = getNode(si, sj + 1)
+      if (!insideCell(region, block, sa[0], sa[1]) || !insideCell(region, block, sb[0], sb[1])) return false
+      return !edgeDropped(seed, block, lattice, si, sj, 2) && !isParallelSliver(region, sa[0], sa[1], sb[0], sb[1])
+    }
+    const aDead = !spineAlive(i, j) && !spineAlive(i, j - 1)
+    const bDead = !spineAlive(i + 1, j) && !spineAlive(i + 1, j - 1)
+    if (bDead && !aDead) {
+      const meet = meetRoad(region, a, b)
+      if (meet) to = meet
+    } else if (aDead && !bDead) {
+      const meet = meetRoad(region, b, a)
+      if (meet) from = meet
+    }
+  }
+  return Math.hypot(to[0] - from[0], to[1] - from[1]) >= 6.0 ? [[from[0], from[1], to[0], to[1]]] : []
+}
+
 // Local streets crossing the box: [{ points: [x0, z0, x1, z1], width, kind, era }].
 export function streetsIn(region, x0, z0, x1, z1) {
   const seed = region.seed
   const out = []
-  const inside = (block, x, z) => insideCell(region, block, x, z)
 
   for (const seamId of seamsInBox(region.blocks, x0 - 15, z0 - 15, x1 + 15, z1 + 15)) {
     const seam = region.blocks.seams[seamId]
@@ -623,55 +703,19 @@ export function streetsIn(region, x0, z0, x1, z1) {
     const lattice = latticeOf(seed, block, params)
     const [i0, i1, j0, j1] = latticeRange(lattice, params, x0, z0, x1, z1)
     if (i1 < i0 || j1 < j0 || (i1 - i0) * (j1 - j0) > 40000) continue
-    const getNode = lattice.cacheFor(i0, i1, j0, j1)
+    const getNode = lattice.cacheFor(i0 - 1, i1 + 1, j0 - 1, j1 + 1)
+
     for (let i = i0; i <= i1; i++) {
       for (let j = j0; j <= j1; j++) {
-        const a = getNode(i, j)
-        const aIn = inside(block, a[0], a[1])
         for (const [di, dj, direction] of [[1, 0, 1], [0, 1, 2]]) {
-          if (edgeDropped(seed, block, lattice, i, j, direction)) continue
-          const b = getNode(i + di, j + dj)
-          const bIn = inside(block, b[0], b[1])
-          if (!aIn && !bIn) continue
-          let from = a
-          let to = b
-          if (aIn !== bIn) {
-            const start = aIn ? a : b
-            const end = aIn ? b : a
-            const meet = meetRoad(region, start, end)
-            if (!meet) continue
-            from = start
-            to = meet
-          } else {
-            // Clip segments dipping across a curved seam collector road inside concave tracts.
-            const mx = (a[0] + b[0]) * 0.5
-            const mz = (a[1] + b[1]) * 0.5
-            const rad = Math.hypot(b[0] - a[0], b[1] - a[1]) * 0.6
-            let cutT = 1
-            const clipHit = (seg) => {
-              const hit = crossing(a[0], a[1], b[0], b[1], seg.ax, seg.az, seg.bx, seg.bz)
-              if (hit && hit.t > 0.02 && hit.t < cutT) cutT = hit.t
-            }
-            region.blocks.seamIndex?.near(mx, mz, rad, clipHit)
-            region.roadIndex.near(mx, mz, rad, clipHit)
-            if (cutT < 0.98) {
-              if (cutT < 0.25) continue
-              to = [a[0] + (b[0] - a[0]) * cutT, a[1] + (b[1] - a[1]) * cutT]
-            }
+          for (const [fx, fz, tx, tz] of resolveLatticeEdges(region, seed, block, lattice, getNode, i, j, di, dj, direction)) {
+            if (Math.max(fx, tx) < x0 - 10 || Math.min(fx, tx) > x1 + 10 || Math.max(fz, tz) < z0 - 10 || Math.min(fz, tz) > z1 + 10) continue
+            const midCell = cellAt(region, (fx + tx) * 0.5, (fz + tz) * 0.5)
+            const era = (midCell >= 0 && region.city.built?.[midCell]) || params.era || 4
+            const width = era === 1 && params.use === USE.DENSE ? 3.2 : lattice.shape.width
+            const kind = width < 3.6 ? 'alley' : 'street'
+            out.push({ points: [fx, fz, tx, tz], width, kind, era })
           }
-          const segLen = Math.hypot(to[0] - from[0], to[1] - from[1])
-          if (segLen < 8.5 && aIn !== bIn) continue
-          const minX = Math.min(from[0], to[0])
-          const maxX = Math.max(from[0], to[0])
-          const minZ = Math.min(from[1], to[1])
-          const maxZ = Math.max(from[1], to[1])
-          if (maxX < x0 - 10 || minX > x1 + 10 || maxZ < z0 - 10 || minZ > z1 + 10) continue
-          if (isParallelSliver(region, from[0], from[1], to[0], to[1])) continue
-          const midCell = cellAt(region, (from[0] + to[0]) * 0.5, (from[1] + to[1]) * 0.5)
-          const era = (midCell >= 0 && region.city.built?.[midCell]) || params.era || 4
-          const width = era === 1 && params.use === USE.DENSE ? 3.2 : lattice.shape.width
-          const kind = width < 3.7 ? 'alley' : 'street'
-          out.push({ points: [from[0], from[1], to[0], to[1]], width, kind, era })
         }
         if (i < i1 && j < j1) {
           const fine = cellFineLane(region, seed, block, lattice, getNode, i, j)
@@ -710,7 +754,15 @@ function meetRoad(region, start, end) {
   }
   region.roadIndex.near(mx, mz, radius, visit)
   region.blocks.seamIndex?.near(mx, mz, radius, visit)
-  return best
+  if (!best) return null
+  // Do not extend a side street through an open stream to reach a distant road.
+  let blockedByStream = false
+  region.streams?.index?.near(mx, mz, radius, (stream) => {
+    if (blockedByStream || stream.data?.covered) return
+    const hit = crossing(start[0], start[1], best[0], best[1], stream.ax, stream.az, stream.bx, stream.bz)
+    if (hit && hit.t > 0.05 && hit.t < 0.95) blockedByStream = true
+  })
+  return blockedByStream ? null : best
 }
 
 function clearance(index, corners, halfWidth) {
@@ -897,7 +949,33 @@ function intKey(gx, gz) {
   return (gx + 2048) + ((gz + 2048) * 4096)
 }
 
-const qLot = (v) => Math.max(0, Math.min(255, Math.round(Math.max(0, v) * 10))) / 10
+const qLot = (v) => Math.max(0, Math.min(255, Math.floor((Math.max(0, v) + 1e-4) * 10))) / 10
+
+function solarAdjustPads(padL, padR, padF, padB, frontSouth, leftSouth, tier) {
+  let l = padL
+  let r = padR
+  let f = padF
+  let b = padB
+  const totalFB = f + b
+  if (frontSouth < -0.35) {
+    // North street (北側道路): pull house toward the street and open the garden in the sunny south backyard.
+    const maxF = tier === 4 ? 2.6 : tier === 3 ? 1.55 : tier >= 1 ? 1.05 : 0.55
+    f = Math.min(f, maxF)
+    b = Math.max(b, totalFB - f) + (tier >= 3 ? 0.9 : tier === 2 ? 0.6 : tier === 1 ? 0.45 : 0.15)
+  } else if (frontSouth > 0.35) {
+    // South street (南側道路): place main garden on the sunny south frontage and tuck service apron behind.
+    const maxB = tier === 4 ? 1.5 : tier === 3 ? 0.95 : 0.6
+    b = Math.min(b, maxB)
+    f = Math.max(f, totalFB - b)
+  }
+  // Keep wider driveway pads on the northern/shaded side when the left flank faces south (`leftSouth > 0.35`).
+  if (leftSouth > 0.35 && l > r + 0.3) {
+    const tmp = l
+    l = r
+    r = tmp
+  }
+  return [l, r, f, b]
+}
 
 function wealthAt(region, x, z, cell, use) {
   const { city, terrain, seed } = region
@@ -1087,11 +1165,20 @@ export function buildingsIn(region, x0, z0, x1, z1) {
     )
 
     if (!lotValid(lotCorners, lotObb)) {
-      // Fallback: shrink yard pads smoothly down to minimal fenced clearance if full yard collides with a curb/neighbor.
-      lot = [Math.min(lot[0], 0.3), Math.min(lot[1], 0.3), Math.min(lot[2], 0.4), Math.min(lot[3], 0.3)]
-      lotCorners = buildLotCorners(bldgObb, lot)
-      lotObb = makeOBB(lotCorners)
-      if (!lotValid(lotCorners, lotObb)) return false
+      // Progressive shrink preserves most of the yard & driveway before falling back to tight boundaries.
+      let fitted = false
+      for (const s of [0.72, 0.44]) {
+        const cand = [qLot(lot[0] * s), qLot(lot[1] * s), qLot(lot[2] * s), qLot(lot[3] * s)]
+        const lc = buildLotCorners(bldgObb, cand)
+        const lo = makeOBB(lc)
+        if (lotValid(lc, lo)) { lot = cand; lotCorners = lc; lotObb = lo; fitted = true; break }
+      }
+      if (!fitted) {
+        lot = [Math.min(lot[0], 0.2), Math.min(lot[1], 0.2), Math.min(lot[2], 0.3), Math.min(lot[3], 0.2)]
+        lotCorners = buildLotCorners(bldgObb, lot)
+        lotObb = makeOBB(lotCorners)
+        if (!lotValid(lotCorners, lotObb)) return false
+      }
     }
 
     if (clearance(region.roadIndex, corners, (kind) => ROAD_WIDTH[kind] / 2) < 1.50) return false
@@ -1115,7 +1202,7 @@ export function buildingsIn(region, x0, z0, x1, z1) {
     const pts = link.points
     const totalLen = cumS[cumS.length - 1]
     const halfRoad = ROAD_WIDTH[link.kind] * 0.5
-    const endClear = halfRoad + 12
+    const endClear = halfRoad + 6.5
     if (totalLen <= endClear * 2 + 8) continue
 
     const slotStep = link.kind >= 3 ? 9.6 : 8.4
@@ -1142,14 +1229,14 @@ export function buildingsIn(region, x0, z0, x1, z1) {
           const nz = sample.tx * side
           const probeDist = halfRoad + 6.5
           const pCell = cellAt(region, sample.x + nx * probeDist, sample.z + nz * probeDist)
-          if (pCell < 0 || city.newtown?.[pCell] === 1) continue
+          if (pCell < 0) continue
           const use = city.use[pCell]
+          if (city.newtown?.[pCell] === 1 && use === USE.MID) continue
           if (use !== USE.COMMERCIAL && use !== USE.MID && use !== USE.DENSE && use !== USE.LOW && use !== USE.HIGH) continue
 
           const price = city.landPrice ? city.landPrice[pCell] : 50
           const pNorm = priceRatio(price)
-          if (pNorm < 0.4 && (h & 31) === 0) continue
-          if (pNorm >= 0.4 && (h & 127) === 0) continue
+          if (pNorm < 0.2 && (h & 63) === 0) continue
 
           const wealth = wealthAt(region, sample.x, sample.z, pCell, use)
           const rTier = ((h >>> 18) & 1023) / 1024
@@ -1199,8 +1286,19 @@ export function buildingsIn(region, x0, z0, x1, z1) {
 
           const ux = sample.tx * side
           const uz = sample.tz * side
+          // Fill lot side pads to meet neighboring roadside parcels instead of leaving wasted unowned gaps.
+          const sideGap = Math.max(0.25, (slotStep - w - 0.16) * 0.5)
+          if (use === USE.LOW || use === USE.DENSE) {
+            const leftW = tier >= 2 && sideGap >= 2.4 ? sideGap : Math.max(lotPads[0], sideGap)
+            const rightW = Math.max(lotPads[1], slotStep - w - 0.16 - leftW)
+            lotPads = solarAdjustPads(leftW, rightW, lotPads[2], lotPads[3], -nz, -uz, tier)
+            setback = Math.max(setback, lotPads[2] + 0.25)
+          } else {
+            lotPads = [Math.max(lotPads[0], sideGap), Math.max(lotPads[1], sideGap), lotPads[2], lotPads[3]]
+          }
           const d0 = halfRoad + setback
-          const corners = rectCorners(sample.x, sample.z, ux, uz, nx, nz, -w * 0.5, w * 0.5, d0, d0 + d)
+          const cxShift = (lotPads[0] - lotPads[1]) * 0.45
+          const corners = rectCorners(sample.x + ux * cxShift, sample.z + uz * cxShift, ux, uz, nx, nz, -w * 0.5, w * 0.5, d0, d0 + d)
           tryPush(corners, lotPads, tier, floors, use, ((h >>> 24) & 255) / 255, pCell)
         }
       }
@@ -1240,14 +1338,14 @@ export function buildingsIn(region, x0, z0, x1, z1) {
           const nxBase = -sample.tz * side
           const nzBase = sample.tx * side
           const pCell = cellAt(region, sample.x + nxBase * 6.5, sample.z + nzBase * 6.5)
-          if (pCell < 0 || city.newtown?.[pCell] === 1) continue
+          if (pCell < 0) continue
           const use = city.use[pCell]
+          if (city.newtown?.[pCell] === 1 && use === USE.MID) continue
           if (use !== USE.LOW && use !== USE.DENSE && use !== USE.COMMERCIAL && use !== USE.MID) continue
 
           const price = city.landPrice ? city.landPrice[pCell] : 50
           const pNorm = priceRatio(price)
-          if (pNorm < 0.4 && (h & 31) === 0) continue
-          if (pNorm >= 0.4 && (h & 127) === 0) continue
+          if (pNorm < 0.2 && (h & 63) === 0) continue
 
           const wealth = wealthAt(region, sample.x, sample.z, pCell, use)
           const rTier = ((h >>> 18) & 1023) / 1024
@@ -1259,9 +1357,11 @@ export function buildingsIn(region, x0, z0, x1, z1) {
           let w = snapKen(tier === 0 ? (4.55 + rW * 1.365) : (5.46 + rW * 1.82), 4.095, 7.28)
           let d = snapKen(6.37 + rD * 2.73, 4.55, 9.555)
           if (sample.sharpTurn) w = snapKen(Math.min(w, 5.46), 4.095, 5.915)
-          const padF = Math.max(0.45, (tier >= 2 ? 1.6 : 0.9 - 0.35 * pNorm) + rS * 0.8)
-          const padL = tier >= 2 && w <= 6.4 ? 2.4 : 0.3
-          const padB = 0.65
+          let padF = Math.max(0.45, (tier >= 2 ? 1.6 : 0.9 - 0.35 * pNorm) + rS * 0.8)
+          const remSide = Math.max(0.5, slotStep - w - 0.16)
+          let padL = tier >= 2 && remSide >= 2.75 ? Math.min(2.6, remSide - 0.3) : remSide * 0.5
+          let padR = Math.max(0.25, remSide - padL)
+          let padB = 0.65
           const yaw = (use === USE.LOW || use === USE.DENSE) ? (((h >>> 24) & 31) / 31 - 0.5) * (era <= 4 ? 0.11 : 0.06) : 0
           const ux0 = sample.tx * side
           const uz0 = sample.tz * side
@@ -1271,11 +1371,14 @@ export function buildingsIn(region, x0, z0, x1, z1) {
           const uz = ux0 * sY + uz0 * cY
           const nx = -uz
           const nz = ux
-          const cx = sample.x + nxBase * (seam.width * 0.5 + 0.15 + padF + d * 0.5)
-          const cz = sample.z + nzBase * (seam.width * 0.5 + 0.15 + padF + d * 0.5)
+          if (use === USE.LOW || use === USE.DENSE) {
+            ;[padL, padR, padF, padB] = solarAdjustPads(padL, padR, padF, padB, -nz, -uz, tier)
+          }
+          const cx = sample.x + nxBase * (seam.width * 0.5 + 0.15 + padF + d * 0.5) + ux * ((padL - padR) * 0.5)
+          const cz = sample.z + nzBase * (seam.width * 0.5 + 0.15 + padF + d * 0.5) + uz * ((padL - padR) * 0.5)
           const floors = use === USE.COMMERCIAL ? (rW > 0.5 ? 3 : 2) : use === USE.MID ? 3 : [2, 2, pNorm > 0.6 ? 3 : 2, 3][(h >>> 8) & 3]
           const corners = rectCorners(cx, cz, ux, uz, nx, nz, -w * 0.5, w * 0.5, -d * 0.5, d * 0.5)
-          tryPush(corners, [padL, 0.3, padF, padB], tier, floors, use, ((h >>> 24) & 255) / 255, pCell)
+          tryPush(corners, [padL, padR, padF, padB], tier, floors, use, ((h >>> 24) & 255) / 255, pCell)
         }
       }
     }
@@ -1374,7 +1477,8 @@ export function buildingsIn(region, x0, z0, x1, z1) {
         const dropBottom = edgeDropped(seed, block, lattice, i, j + 1, 1)
 
         for (const side of [0, 1]) {
-          if (edgeDropped(seed, block, lattice, i + side, j, 2)) continue
+          const edgeSegs = resolveLatticeEdges(region, seed, block, lattice, getNode, i + side, j, 0, 1, 2)
+          if (!edgeSegs.length) continue
           const edgeA = side === 0 ? p00 : p10
           const edgeB = side === 0 ? p01 : p11
           const oppA = side === 0 ? p10 : p00
@@ -1396,78 +1500,33 @@ export function buildingsIn(region, x0, z0, x1, z1) {
           const halfDepth = Math.min(Math.abs(perpSpan) * 0.495, sideA * 0.495)
           if (halfDepth < 5.5) continue
 
-          const insetA = dropTop ? 0.5 : street + 0.35
-          const insetB = dropBottom ? 0.5 : street + 0.35
-          const usableStart = insetA
-          const usableEnd = edgeLen - insetB
-          if (usableEnd - usableStart < 4.5) continue
-
+          const insetA = dropTop ? 0.4 : street + 0.55
+          const insetB = dropBottom ? 0.4 : street + 0.55
           const cellPrice = city.landPrice ? city.landPrice[centreCell] : 50
           const cellPNorm = priceRatio(cellPrice)
           const cellWealth = wealthAt(region, cx, cz, centreCell, blockUse)
           const lotUse = LOTS[blockUse] ? blockUse : USE.LOW
 
-          // Partition parcel frontages upfront according to each lot's household wealth tier,
-          // reserving narrow plots for small cottages and wide 18-23m consolidated plots for rare 豪邸.
-          const parcels = []
-          let cursor = usableStart
-          let cutIdx = 0
-          while (cursor < usableEnd - 1e-3) {
-            const hc = hash3(seed + 51, block * 7919 + i * 131 + side * 37 + cutIdx++, j)
-            const rStep = (hc & 255) / 255
-            const rTier = ((hc >>> 12) & 1023) / 1024
-            const rem = usableEnd - cursor
-            let tier = pickTier(cellWealth, lotUse, rTier, !isPlanned && Math.abs(perpSpan) >= 24 && rem >= 18)
-            let stepW = LOTS[lotUse].frontage
-
-            if (lotUse === USE.LOW || lotUse === USE.DENSE) {
-              if (tier === 4 && rem < 18) tier = 3
-              if (tier === 3 && rem < 12.8) tier = 2
-              if (tier === 4) stepW = 19.0 + rStep * 4.2
-              else if (tier === 3) stepW = (14.4 - 1.2 * cellPNorm) * (0.90 + 0.20 * rStep)
-              else if (tier === 2) stepW = (11.2 - 1.0 * cellPNorm) * (0.88 + 0.24 * rStep)
-              else if (tier === 1) stepW = (8.2 - 1.5 * cellPNorm) * (0.86 + 0.28 * rStep)
-              else stepW = (5.8 - 0.7 * cellPNorm) * (0.86 + 0.24 * rStep)
-            } else if (lotUse === USE.COMMERCIAL) {
-              stepW = (10.5 - 3.3 * cellPNorm) * (0.76 + 0.48 * rStep)
-              tier = 1
-            } else if (lotUse === USE.MID) {
-              stepW = (24 - 7.5 * cellPNorm) * (0.82 + 0.36 * rStep)
-              tier = 2
-            } else {
-              stepW = LOTS[lotUse].frontage * (0.85 + 0.30 * rStep)
-              tier = 2
-            }
-
-            if (usableEnd - (cursor + stepW) < 4.5) {
-              parcels.push({ s0: cursor, s1: usableEnd, tier })
-              break
-            }
-            parcels.push({ s0: cursor, s1: cursor + stepW, tier })
-            cursor += stepW
-          }
-
-          for (let k = 0; k < parcels.length; k++) {
-            const { s0: pA, s1: pB, tier: slotTier } = parcels[k]
+          const tryParcel = (pA, pB, slotTier, k) => {
             const midS = (pA + pB) * 0.5
             const midX = edgeA[0] + ux * midS + nx * Math.min(halfDepth * 0.5, 5.0)
             const midZ = edgeA[1] + uz * midS + nz * Math.min(halfDepth * 0.5, 5.0)
             const cell = cellAt(region, midX, midZ)
-            if (cell < 0 || region.blocks.id[cell] !== block) continue
+            if (cell < 0 || region.blocks.id[cell] !== block) return false
             const use = city.use[cell]
             const lot = LOTS[use]
-            if (!lot || use === USE.PUBLIC || city.newtown?.[cell] === 1) continue
+            if (!lot || use === USE.PUBLIC || (city.newtown?.[cell] === 1 && use === USE.MID)) return false
 
             const price = city.landPrice ? city.landPrice[cell] : 50
             const pNorm = priceRatio(price)
             const h = hash3(seed + 5, block * 7919 + i * 131 + k * 17, j * 2 + side)
-            const baseSkip = (use === USE.DENSE || use === USE.COMMERCIAL) ? 8 : 14
-            const skipThreshold = slotTier >= 3 ? 0 : Math.round(baseSkip * (1 - 0.92 * pNorm))
-            if ((h & 255) < skipThreshold) continue
+            const baseSkip = (use === USE.DENSE || use === USE.COMMERCIAL || use === USE.MID) ? 0 : 4
+            const skipThreshold = slotTier >= 3 ? 0 : Math.round(baseSkip * (1 - 0.9 * pNorm))
+            if ((h & 255) < skipThreshold) return false
 
             const tier = (use === USE.LOW || use === USE.DENSE) ? slotTier : (use === USE.MID ? 2 : 1)
-            const spanW = pB - pA - 0.02
-            if (spanW < 4.2) continue
+            const spanW = pB - pA - 0.04
+            if (spanW < 4.2) return false
 
             const cellEra = city.built?.[cell] || 4
             const rW = ((h >>> 4) & 63) / 63
@@ -1475,82 +1534,85 @@ export function buildingsIn(region, x0, z0, x1, z1) {
             const rS = ((h >>> 15) & 31) / 31
 
             // Set house size + yard pad dimensions based on income tier (`0=small..4=rare estate`).
-            const tightSide = use === USE.DENSE ? (0.42 - 0.16 * pNorm) : (0.65 - 0.35 * pNorm)
+            const tightSide = use === USE.DENSE ? (0.38 - 0.14 * pNorm) : (0.55 - 0.25 * pNorm)
             let padL = tightSide
             let padR = tightSide
-            let padF = use === USE.LOW ? (1.20 - 0.65 * pNorm) : (0.55 - 0.20 * pNorm)
-            let padB = use === USE.COMMERCIAL ? 0.30 : (0.85 - 0.45 * pNorm)
+            let padF = use === USE.LOW ? (1.15 - 0.55 * pNorm) : (0.55 - 0.20 * pNorm)
+            let padB = use === USE.COMMERCIAL ? 0.30 : (0.75 - 0.35 * pNorm)
             let width = spanW - (padL + padR)
 
             if (use === USE.LOW || use === USE.DENSE) {
               if (tier === 4) {
-                // Rare landmark estate: wide 2-car courtyard + side garden around a 11.4-14.6m mansion.
                 padL = Math.min(5.2, spanW * 0.24)
                 padR = Math.min(3.4, spanW * 0.16)
-                width = snapKen(Math.min(14.56, spanW - padL - padR), 10.92, 14.56)
+                width = floorKen(Math.min(14.56, spanW - padL - padR), 10.92, 14.56)
                 padR = Math.max(1.8, spanW - padL - width)
-                padF = 4.2 + rS * 2.2
-                padB = 2.4 + rD * 1.6
+                padF = 4.0 + rS * 2.0
+                padB = 2.2 + rD * 1.4
               } else if (tier === 3) {
-                // Affluent large home + spacious garden + 1-2 car garage apron.
                 padL = Math.min(4.2, Math.max(3.0, spanW * 0.26))
                 padR = Math.max(1.0, (spanW - padL) * 0.14)
-                width = snapKen(Math.min(12.285, spanW - padL - padR), 8.645, 12.285)
+                width = floorKen(Math.min(12.285, spanW - padL - padR), 8.645, 12.285)
                 padR = Math.max(0.6, spanW - padL - width)
-                padF = 2.6 + rS * 1.4
-                padB = 1.2 + rD * 1.1
+                padF = 2.4 + rS * 1.3
+                padB = 1.1 + rD * 1.0
               } else if (tier === 2) {
-                // Upper-mid family home with 1-car driveway (padL >= 2.6m) & front lawn.
-                padL = spanW >= 9.6 ? Math.min(3.2, 2.65 + rW * 0.5) : tightSide
+                padL = spanW >= 9.6 ? Math.min(3.1, 2.60 + rW * 0.45) : tightSide
                 padR = spanW >= 10.6 ? 0.85 : tightSide
-                width = snapKen(Math.min(10.465, spanW - padL - padR), 6.37, 10.465)
+                width = floorKen(Math.min(10.465, spanW - padL - padR), 6.37, 10.465)
                 padR = Math.max(tightSide, spanW - padL - width)
-                padF = 1.6 + rS * 1.2
-                padB = 0.85 + rD * 0.75
+                padF = 1.5 + rS * 1.1
+                padB = 0.80 + rD * 0.70
               } else if (tier === 1) {
-                // Standard family home: 1-car side pad only if parcel wide enough (>= 8.3m).
                 if (spanW >= 8.4) {
-                  padL = 2.55
+                  padL = 2.50
                   padR = tightSide
-                  width = snapKen(Math.min(8.19, spanW - padL - padR), 5.005, 8.19)
+                  width = floorKen(Math.min(8.19, spanW - padL - padR), 5.005, 8.19)
                   padR = Math.max(tightSide, spanW - padL - width)
                 } else {
-                  width = snapKen(Math.min(8.19, spanW - padL - padR), 4.55, 8.19)
+                  width = floorKen(Math.min(8.19, spanW - padL - padR), 4.55, 8.19)
                   const remW = Math.max(0, spanW - width)
                   padL = remW * 0.5
                   padR = remW * 0.5
                 }
-                padF = (1.30 - 0.65 * pNorm) + rS * (1.2 - 0.45 * pNorm)
-                padB = (0.75 - 0.35 * pNorm) + rD * 0.4
+                padF = (1.20 - 0.55 * pNorm) + rS * (1.1 - 0.40 * pNorm)
+                padB = (0.70 - 0.30 * pNorm) + rD * 0.35
               } else {
-                // Tier 0: Compact starter house / skinny 3F pencil with minimal block-fenced entry path.
-                width = snapKen(Math.min(5.915, spanW - padL - padR), 3.64, 5.915)
-                const remW = Math.max(0.5, spanW - width)
+                width = floorKen(Math.min(5.915, spanW - padL - padR), 3.64, 5.915)
+                const remW = Math.max(0.4, spanW - width)
                 padL = remW * 0.5
                 padR = remW * 0.5
-                padF = (0.65 - 0.25 * pNorm) + rS * 0.45
-                padB = 0.4 + rD * 0.35
+                padF = (0.60 - 0.20 * pNorm) + rS * 0.40
+                padB = 0.35 + rD * 0.30
               }
             } else {
               width = Math.min(spanW - (padL + padR), use === USE.COMMERCIAL ? 16.38 : lot.frontage * 1.35)
-              padF = use === USE.COMMERCIAL ? 0.35 + rS * 0.35 : 1.0 + rS * 0.8
-              padB = use === USE.COMMERCIAL ? 0.30 : 0.75
+              const remSide = Math.max(0.4, spanW - width)
+              padL = remSide * 0.5
+              padR = remSide * 0.5
+              padF = use === USE.COMMERCIAL ? 0.35 + rS * 0.35 : 1.0 + rS * 0.7
+              padB = use === USE.COMMERCIAL ? 0.30 : 0.70
             }
-            if (width < 3.6) continue
+            if (width < 3.6) return false
 
-            // Parcel front edge starts 8 cm behind the street boundary; deep estates (tier 4) can claim past centerline.
-            const lotFrontLine = street + 0.08
-            const maxParcelSpan = tier === 4 ? Math.min(23.5, Math.abs(perpSpan) * 0.72) : Math.abs(perpSpan) * 0.495
-            const maxFrontRoom = Math.max(5.0, maxParcelSpan - lotFrontLine)
-            if (maxFrontRoom < 5.0) continue
+            const frontSouth = -nz
+            if (use === USE.LOW || use === USE.DENSE) {
+              ;[padL, padR, padF, padB] = solarAdjustPads(padL, padR, padF, padB, frontSouth, -uz, tier)
+            }
+
+            const lotFrontLine = street + 0.12
+            const maxParcelSpan = tier === 4 ? Math.min(23.5, Math.abs(perpSpan) * 0.72) : Math.abs(perpSpan) * 0.492
+            const maxFrontRoom = Math.max(4.8, maxParcelSpan - lotFrontLine)
+            if (maxFrontRoom < 4.8) return false
 
             let availBldgD = maxFrontRoom - padF - padB
-            if (availBldgD < 4.5) {
-              padF = Math.max(0.4, padF * 0.5)
-              padB = Math.max(0.35, padB * 0.5)
+            if (availBldgD < 4.55) {
+              const scale = Math.max(0.25, (maxFrontRoom - 4.6) / Math.max(0.1, padF + padB))
+              padF = Math.max(0.35, padF * scale)
+              padB = Math.max(0.30, padB * scale)
               availBldgD = maxFrontRoom - padF - padB
             }
-            if (availBldgD < 3.6) continue
+            if (availBldgD < 3.65) return false
 
             let depth
             if (use === USE.LOW || use === USE.DENSE) {
@@ -1559,27 +1621,27 @@ export function buildingsIn(region, x0, z0, x1, z1) {
                 : tier === 2 ? 8.19 + rD * 2.275
                 : tier === 1 ? 6.825 + rD * 2.275
                 : 5.46 + rD * 1.82
-              depth = snapKen(Math.min(targetD, availBldgD, 13.65), 3.64, Math.min(13.65, availBldgD))
+              depth = floorKen(Math.min(targetD, availBldgD, 13.65), 3.64, Math.min(13.65, availBldgD))
             } else {
               depth = Math.min(availBldgD, lot.depth * (0.85 + 0.15 * rD))
             }
-            if (depth < 3.6) continue
+            if (depth < 3.6) return false
 
-            // Note small yaw jitter is only applied when parcel pads keep orthogonal bounding clearance clean.
-            const yawJitter = !isPlanned && tier <= 2 && (use === USE.LOW || use === USE.DENSE)
-              ? ((((h >>> 20) & 63) / 63) - 0.5) * (cellEra <= 3 ? 0.08 : 0.04) : 0
+            const yawJitter = !isPlanned && tier <= 1 && (use === USE.LOW || use === USE.DENSE)
+              ? ((((h >>> 20) & 63) / 63) - 0.5) * (cellEra <= 3 ? 0.05 : 0.02) : 0
             const cY = Math.cos(yawJitter)
             const sY = Math.sin(yawJitter)
             const bux = ux * cY - uz * sY
             const buz = ux * sY + uz * cY
-            const bnx = -buz
-            const bnz = bux
+            // Rotate (nx, nz) directly so `(bnx, bnz)` ALWAYS points inward into the block for both side=0 and side=1.
+            const bnx = nx * cY - nz * sY
+            const bnz = nx * sY + nz * cY
             const aCenter = (pA + pB) * 0.5 + (padL - padR) * 0.5
             const houseFront = lotFrontLine + padF
             const bcx = edgeA[0] + ux * aCenter + nx * (houseFront + depth * 0.5)
             const bcz = edgeA[1] + uz * aCenter + nz * (houseFront + depth * 0.5)
             const corners = rectCorners(bcx, bcz, bux, buz, bnx, bnz, -width * 0.5, width * 0.5, -depth * 0.5, depth * 0.5)
-            if (fineLane && !clearOfFineLane(fineLane, corners)) continue
+            if (fineLane && !clearOfFineLane(fineLane, corners)) return false
 
             let floors = lot.floors[(h >>> 16) % lot.floors.length]
             if (use === USE.LOW && tier === 0 && pNorm > 0.55 && (h & 3) === 0) floors = 3
@@ -1587,38 +1649,76 @@ export function buildingsIn(region, x0, z0, x1, z1) {
             if (price > 130 && (use === USE.COMMERCIAL || use === USE.MID || use === USE.HIGH)) {
               floors = lot.floors[Math.min(lot.floors.length - 1, ((h >>> 16) % lot.floors.length) + 1)]
             }
-            const lotTuple = [padL, padR, padF, padB]
-            const placed = tryPush(corners, lotTuple, tier, floors, use, (h >>> 24) / 255, cell)
+            const placed = tryPush(corners, [padL, padR, padF, padB], tier, floors, use, (h >>> 24) / 255, cell)
+            return placed
+          }
 
-            // Flagpole lot infill (旗竿地) behind modest front houses leaving unused interior core pockets.
-            if (placed && !isPlanned && tier <= 2 && (use === USE.LOW || use === USE.DENSE) && Math.abs(perpSpan) >= 28 && !fineLane) {
-              const rearD0 = houseFront + depth + padB + 0.65
-              if (rearD0 + 6.5 <= Math.abs(perpSpan) * 0.56) {
-                const hr = hash3(seed + 911, block * 3571 + i * 89 + k, (j * 2 + side) * 7)
-                if ((hr & 3) !== 0 || pNorm >= 0.5) {
-                  const rw = snapKen(5.46 + ((hr >>> 4) & 31) / 31 * 1.82, 4.095, 7.735)
-                  const rd = snapKen(5.005 + ((hr >>> 9) & 31) / 31 * 1.82, 4.095, 7.28)
-                  const rx = edgeA[0] + ux * (aCenter + (((hr >>> 14) & 15) / 15 - 0.5) * 1.2) + nx * (rearD0 + rd * 0.5)
-                  const rz = edgeA[1] + uz * (aCenter + (((hr >>> 14) & 15) / 15 - 0.5) * 1.2) + nz * (rearD0 + rd * 0.5)
-                  const rcCell = cellAt(region, rx, rz)
-                  if (rcCell >= 0 && region.blocks.id[rcCell] === block && (city.use[rcCell] === USE.LOW || city.use[rcCell] === USE.DENSE)) {
-                    const rearCorners = rectCorners(rx, rz, bux, buz, bnx, bnz, -rw * 0.5, rw * 0.5, -rd * 0.5, rd * 0.5)
-                    tryPush(rearCorners, [0.4, 0.4, 0.7, 0.45], 0, 2, city.use[rcCell], ((hr >>> 24) & 255) / 255, rcCell)
-                  }
-                }
+          for (const [sx0, sz0, sx1, sz1] of edgeSegs) {
+            const t0 = (sx0 - edgeA[0]) * ux + (sz0 - edgeA[1]) * uz
+            const t1 = (sx1 - edgeA[0]) * ux + (sz1 - edgeA[1]) * uz
+            const usableStart = Math.max(insetA, Math.min(t0, t1))
+            const usableEnd = Math.min(edgeLen - insetB, Math.max(t0, t1))
+            if (usableEnd - usableStart < 4.5) continue
+
+            const parcels = []
+            let cursor = usableStart
+            let cutIdx = 0
+            while (cursor < usableEnd - 1e-3) {
+              const hc = hash3(seed + 51, block * 7919 + i * 131 + side * 37 + cutIdx++, j)
+              const rStep = (hc & 255) / 255
+              const rTier = ((hc >>> 12) & 1023) / 1024
+              const rem = usableEnd - cursor
+              let tier = pickTier(cellWealth, lotUse, rTier, !isPlanned && Math.abs(perpSpan) >= 24 && rem >= 18)
+              let stepW = LOTS[lotUse].frontage
+
+              if (lotUse === USE.LOW || lotUse === USE.DENSE) {
+                if (tier === 4 && rem < 18) tier = 3
+                if (tier === 3 && rem < 12.8) tier = 2
+                if (tier === 4) stepW = 19.0 + rStep * 4.2
+                else if (tier === 3) stepW = (14.4 - 1.2 * cellPNorm) * (0.90 + 0.20 * rStep)
+                else if (tier === 2) stepW = (11.2 - 1.0 * cellPNorm) * (0.88 + 0.24 * rStep)
+                else if (tier === 1) stepW = (8.2 - 1.5 * cellPNorm) * (0.86 + 0.28 * rStep)
+                else stepW = (5.8 - 0.7 * cellPNorm) * (0.86 + 0.24 * rStep)
+              } else if (lotUse === USE.COMMERCIAL) {
+                stepW = (10.5 - 3.3 * cellPNorm) * (0.76 + 0.48 * rStep)
+                tier = 1
+              } else if (lotUse === USE.MID) {
+                stepW = (18.5 - 5.5 * cellPNorm) * (0.84 + 0.32 * rStep)
+                tier = 2
+              } else {
+                stepW = LOTS[lotUse].frontage * (0.85 + 0.30 * rStep)
+                tier = 2
+              }
+
+              if (usableEnd - (cursor + stepW) < 4.5) {
+                parcels.push({ s0: cursor, s1: usableEnd, tier })
+                break
+              }
+              parcels.push({ s0: cursor, s1: cursor + stepW, tier })
+              cursor += stepW
+            }
+
+            for (let k = 0; k < parcels.length; k++) {
+              const { s0: pA, s1: pB, tier: slotTier } = parcels[k]
+              if (!tryParcel(pA, pB, slotTier, k) && pB - pA >= 10.0) {
+                // Subdivide any blocked wide parcel into standard Tier 1 lots rather than leaving an empty gap.
+                const mid = (pA + pB) * 0.5
+                tryParcel(pA, mid, 1, k * 2 + 1)
+                tryParcel(mid, pB, 1, k * 2 + 2)
               }
             }
           }
         }
 
-        // Cross-street end infill (`p00->p10` and `p01->p11`) along existing cross-streets only.
+        // Cross-street end infill (`p00->p10` and `p01->p11`), anchored strictly along active cross-street segments.
         for (const endEdge of [0, 1]) {
-          if (endEdge === 0 ? dropTop : dropBottom) continue
+          const endSegs = resolveLatticeEdges(region, seed, block, lattice, getNode, i, j + endEdge, 1, 0, 1)
+          if (!endSegs.length) continue
           const eA = endEdge === 0 ? p00 : p01
           const eB = endEdge === 0 ? p10 : p11
           const eOpp = endEdge === 0 ? p01 : p10
           const eLen = Math.hypot(eB[0] - eA[0], eB[1] - eA[1])
-          if (eLen < 16) continue
+          if (eLen < 14) continue
           const eux = (eB[0] - eA[0]) / eLen
           const euz = (eB[1] - eA[1]) / eLen
           let enx = -euz
@@ -1627,28 +1727,42 @@ export function buildingsIn(region, x0, z0, x1, z1) {
             enx = -enx
             enz = -enz
           }
-          const eSlotStep = 7.6
-          const count = Math.floor((eLen - 6) / eSlotStep)
-          for (let m = 0; m < count; m++) {
-            const sPos = 3.5 + (m + 0.5) * eSlotStep
-            const mx = eA[0] + eux * sPos + enx * 7.5
-            const mz = eA[1] + euz * sPos + enz * 7.5
-            const ec = cellAt(region, mx, mz)
-            if (ec < 0 || region.blocks.id[ec] !== block || city.newtown?.[ec] === 1) continue
-            const eu = city.use[ec]
-            if (eu !== USE.LOW && eu !== USE.DENSE && eu !== USE.COMMERCIAL) continue
-            const pNorm = priceRatio(city.landPrice ? city.landPrice[ec] : 50)
-            const he = hash3(seed + 823, block * 991 + i * 29 + m, j * 3 + endEdge)
-            const w = snapKen(5.005 + ((he >>> 4) & 15) / 15 * 2.275, 4.095, 7.735)
-            const d = snapKen(5.915 + ((he >>> 8) & 15) / 15 * 2.73, 4.55, 9.1)
-            const padF = Math.max(0.45, 0.85 - 0.40 * pNorm)
-            const d0 = street + 0.08 + padF
-            const corners = rectCorners(eA[0], eA[1], eux, euz, enx, enz, sPos - w * 0.5, sPos + w * 0.5, d0, d0 + d)
-            tryPush(corners, [0.3, 0.3, padF, 0.5], 1, pNorm > 0.65 && (he & 3) === 0 ? 3 : 2, eu, ((he >>> 24) & 255) / 255, ec)
+          for (const [sx0, sz0, sx1, sz1] of endSegs) {
+            const t0 = (sx0 - eA[0]) * eux + (sz0 - eA[1]) * euz
+            const t1 = (sx1 - eA[0]) * eux + (sz1 - eA[1]) * euz
+            const es0 = Math.max(street + 1.5, Math.min(t0, t1))
+            const es1 = Math.min(eLen - street - 1.5, Math.max(t0, t1))
+            if (es1 - es0 < 6.0) continue
+            const eSlotStep = 7.4
+            const count = Math.max(1, Math.floor((es1 - es0) / eSlotStep))
+            const actualStep = (es1 - es0) / count
+            for (let m = 0; m < count; m++) {
+              const sPos = es0 + (m + 0.5) * actualStep
+              const mx = eA[0] + eux * sPos + enx * 7.5
+              const mz = eA[1] + euz * sPos + enz * 7.5
+              const ec = cellAt(region, mx, mz)
+              if (ec < 0 || region.blocks.id[ec] !== block) continue
+              const eu = city.use[ec]
+              if (city.newtown?.[ec] === 1 && eu === USE.MID) continue
+              if (eu !== USE.LOW && eu !== USE.DENSE && eu !== USE.COMMERCIAL) continue
+              const pNorm = priceRatio(city.landPrice ? city.landPrice[ec] : 50)
+              const he = hash3(seed + 823, block * 991 + i * 29 + m, j * 3 + endEdge)
+              const w = floorKen(Math.min(actualStep - 0.7, 5.005 + ((he >>> 4) & 15) / 15 * 2.275), 4.095, 7.735)
+              const d = floorKen(5.915 + ((he >>> 8) & 15) / 15 * 2.73, 4.55, 9.1)
+              const sideSpan = Math.max(0.5, actualStep - w - 0.12)
+              let [eL, eR, padF, eB] = [sideSpan * 0.5, sideSpan * 0.5, Math.max(0.45, 0.85 - 0.40 * pNorm), 0.5]
+              if (eu === USE.LOW || eu === USE.DENSE) {
+                ;[eL, eR, padF, eB] = solarAdjustPads(eL, eR, padF, eB, -enz, -euz, 1)
+              }
+              const sCenter = sPos + (eL - eR) * 0.5
+              const d0 = street + 0.12 + padF
+              const corners = rectCorners(eA[0], eA[1], eux, euz, enx, enz, sCenter - w * 0.5, sCenter + w * 0.5, d0, d0 + d)
+              tryPush(corners, [eL, eR, padF, eB], 1, pNorm > 0.65 && (he & 3) === 0 ? 3 : 2, eu, ((he >>> 24) & 255) / 255, ec)
+            }
           }
         }
 
-        if (fineLane && fineLane.culDeSac && sideA >= 32) {
+        if (fineLane && sideA >= 28) {
           const [ax, az, bx, bz] = fineLane.points
           const laneLen = Math.hypot(bx - ax, bz - az)
           if (laneLen >= 16) {
@@ -1657,22 +1771,29 @@ export function buildingsIn(region, x0, z0, x1, z1) {
             const lnx = -luz
             const lnz = lux
             for (const lSide of [-1, 1]) {
-              const count = Math.max(1, Math.floor((laneLen - 5) / 8.0))
+              const spanStart = 3.0
+              const spanEnd = laneLen - (fineLane.culDeSac ? 1.5 : 3.0)
+              if (spanEnd - spanStart < 5.5) continue
+              const count = Math.max(1, Math.floor((spanEnd - spanStart) / 7.4))
+              const actualStep = (spanEnd - spanStart) / count
               for (let m = 0; m < count; m++) {
                 const h = hash3(seed + 617, block * 131 + i * 19 + m, j * 4 + (lSide + 1))
-                const aMid = 4 + (m + 0.5) * ((laneLen - 5) / count)
-                const w = snapKen(5.46 + ((h >>> 4) & 15) / 15 * 1.82, 4.55, 7.735)
-                const d = snapKen(5.46 + ((h >>> 8) & 15) / 15 * 1.82, 4.55, 7.735)
-                const padF = 0.55 + (((h >>> 12) & 15) / 15) * 0.5
-                const d0 = fineLane.width * 0.5 + 0.08 + padF
-                const corners = rectCorners(ax, az, lux, luz, lnx * lSide, lnz * lSide, aMid - w * 0.5, aMid + w * 0.5, d0, d0 + d)
+                const aMid = spanStart + (m + 0.5) * actualStep
+                const w = floorKen(Math.min(actualStep - 0.7, 5.005 + ((h >>> 4) & 15) / 15 * 2.275), 4.095, 7.735)
+                const d = floorKen(5.005 + ((h >>> 8) & 15) / 15 * 2.275, 4.095, 7.735)
+                const sideRem = Math.max(0.5, actualStep - w - 0.14)
+                let [eL, eR, padF, eB] = [sideRem * 0.5, sideRem * 0.5, 0.55 + (((h >>> 12) & 15) / 15) * 0.5, 0.45]
+                ;[eL, eR, padF, eB] = solarAdjustPads(eL, eR, padF, eB, -(lnz * lSide), -luz, 1)
+                const aCenter = aMid + (eL - eR) * 0.5
+                const d0 = fineLane.width * 0.5 + 0.12 + padF
+                const corners = rectCorners(ax, az, lux, luz, lnx * lSide, lnz * lSide, aCenter - w * 0.5, aCenter + w * 0.5, d0, d0 + d)
                 const fx = (corners[0] + corners[4]) * 0.5
                 const fz = (corners[1] + corners[5]) * 0.5
                 const cCell = cellAt(region, fx, fz)
                 if (cCell < 0 || region.blocks.id[cCell] !== block) continue
                 const cUse = city.use[cCell]
                 if (cUse !== USE.LOW && cUse !== USE.DENSE) continue
-                tryPush(corners, [0.3, 0.3, padF, 0.45], 1, 2, cUse, ((h >>> 24) & 255) / 255, cCell)
+                tryPush(corners, [eL, eR, padF, eB], 1, 2, cUse, ((h >>> 24) & 255) / 255, cCell)
               }
             }
           }

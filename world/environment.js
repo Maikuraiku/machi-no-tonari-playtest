@@ -18,7 +18,7 @@ export function createEnvironment(scene, renderer) {
   // under half way up the sky. Houses in Japan face south, so their fronts stand in the sun.
   const sunDirection = new THREE.Vector3().setFromSphericalCoords(1, THREE.MathUtils.degToRad(90 - 44), THREE.MathUtils.degToRad(-36))
   const sky = new Sky()
-  sky.scale.setScalar(4000)
+  sky.scale.setScalar(48000)
   const uniforms = sky.material.uniforms
   uniforms.turbidity.value = 4.2
   uniforms.rayleigh.value = 1.5
@@ -45,7 +45,17 @@ export function createEnvironment(scene, renderer) {
   scene.add(sky)
   const clouds = createClouds(sunDirection)
   scene.add(clouds.mesh)
-  scene.fog = new THREE.Fog(HORIZON, 260, 2600)
+  let baseFog = { near: 260, far: 2600 }
+  scene.fog = new THREE.Fog(HORIZON, baseFog.near, baseFog.far)
+  function setViewDistance(metres = 400) {
+    const dist = Math.max(400, Number(metres) || 400)
+    baseFog = dist <= 500
+      ? { near: 260, far: 2600 }
+      : { near: Math.max(260, Math.round(dist * 0.25)), far: Math.max(2600, Math.round(dist * 1.45 + 600)) }
+    scene.fog.near = baseFog.near
+    scene.fog.far = baseFog.far
+    return { ...baseFog }
+  }
 
   const sun = new THREE.DirectionalLight('#fff1dc', 5.2)
   sun.castShadow = true
@@ -58,7 +68,7 @@ export function createEnvironment(scene, renderer) {
 
   const sea = new THREE.Group()
   scene.add(sea)
-  const seaGeometry = new THREE.PlaneGeometry(9000, 9000)
+  const seaGeometry = new THREE.PlaneGeometry(40000, 40000)
   const plainSea = new THREE.Mesh(seaGeometry, new THREE.MeshStandardMaterial({
     color: '#2c5870', roughness: 0.16, metalness: 0.75, envMapIntensity: 1.2,
   }))
@@ -448,7 +458,8 @@ export function createEnvironment(scene, renderer) {
   }
 
   return {
-    sun, ambient, sunDirection, drawTown, setQuality, update,
+    sun, ambient, sunDirection, drawTown, setQuality, setViewDistance, update,
+    baseFog: () => ({ ...baseFog }),
     trees: () => (outdoors ? leafBalls : []),
     groundMap: () => (outdoors ? groundPicture : null),
     // Indoors or in a region town the flat island is hidden, while the sky keeps lighting the world.

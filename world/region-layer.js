@@ -14,10 +14,10 @@
 import * as THREE from 'three'
 import { STEP, decodeLine, packSpec } from '../region/game-pack.js'
 import { regionClient } from './region-client.js'
-import { createRegionScene } from './region-scene.js'
+import { createDistantBuildings, createRegionScene } from './region-scene.js'
 import { createRouteTransit } from './route-transit.js'
 import { REGION_OVERVIEW_STEP, regionOverview } from './region-overview.js'
-import { buildingFilter, claimsKey, levelOf as lotLevel, lotRects, outlinesIn, padGround, padsOf } from './region-pads.js'
+import { buildingFilter, claimsKey, clearedKey, levelOf as lotLevel, lotRects, outlinesIn, padGround, padsOf } from './region-pads.js'
 import { claimIndex, lotRights } from '../region/district-lookup.js'
 import { rayOnto, standOn, stopsAt } from './station-solids.js'
 
@@ -27,6 +27,14 @@ const SIZE = 20000
 const NEAR = { low: { half: 240, step: 4 }, medium: { half: 320, step: 2 }, high: { half: 400, step: 2 } }
 // The coarse square beyond it, sunk a little so that the detailed ground always lies on top.
 const FAR = { half: 3200, step: 32, sink: 0.6 }
+function farSpecFor(viewDistance) {
+  if (viewDistance <= 1600) return { half: FAR.half, step: FAR.step }
+  const half = Math.min(11500, Math.round((viewDistance + 1200) / 100) * 100)
+  const step = Math.min(128, Math.max(32, Math.ceil((half * 2) / 220 / 8) * 8))
+  return { half, step }
+}
+const DISTANT_TILE = 2000
+const DISTANT_MAX_INFLIGHT = 1
 // How far along the monorail its beams, piers and stations are built round the player.
 const TRACK_REACH = 900
 // The grid (m) that the walls of the buildings are sorted into, for stopping a walker.
@@ -63,18 +71,20 @@ const clampBox = (cx, cz, half) => ({
 export function withRegion(environment, world, { sound } = {}) {
   const near = createRegionScene()
   const far = createRegionScene()
+  const distant = createDistantBuildings()
   const whole = createRegionScene()
   const transit = createRouteTransit({ clock: () => regionClient.now() / 1000, sound })
   const group = new THREE.Group()
   group.name = 'region-town'
   const routes = new THREE.Group()
   routes.name = 'region-overview-routes'
-  group.add(whole.group, far.group, near.group, transit.group, routes)
+  group.add(whole.group, far.group, distant.group, near.group, transit.group, routes)
   group.visible = false
   world.add(group)
 
   let map = null
   let quality = 'medium'
+  let viewDistance = 400
   let nearBox = null
   let farBox = null
   let loadingNear = false
@@ -84,6 +94,10 @@ export function withRegion(environment, world, { sound } = {}) {
   let overview = false
   let previousBackground = null
   let previousFog = null
+  let distantInFlight = 0
+  const distantPending = new Set()
+  let distantLastFocus = null
+  let distantFilterKey = ''
   // Where the ground is not yet known: the plaza's height, where newcomers arrive.
   let fallback = 0
   let walls = new Map()
@@ -93,10 +107,11 @@ export function withRegion(environment, world, { sound } = {}) {
   let lots = []
   let nearRaw = null
   let nearShownKey = ''
+  let visibleBuildings = []
   // The lines' centres in pieces of 20 m, sorted into a grid, each with the room it keeps clear.
   let lineGrid = new Map()
   // How long the last windows took to make, for tuning.
-  const stats = { near: 0, nearBuildings: 0, hidden: 0, far: 0, whole: 0, wholeVertices: 0 }
+  const stats = { near: 0, nearBuildings: 0, hidden: 0, far: 0, whole: 0, wholeVertices: 0, distantTiles: 0 }
   // (Readable from the page's console through the client, which the page shares.)
   regionClient.stats = stats
   // Changes on entering or leaving a region town, so that late replies are dropped.
@@ -128,8 +143,9 @@ export function withRegion(environment, world, { sound } = {}) {
     environment.setOutdoors(false)
     group.visible = true
     previousBackground = world.background
-    previousFog = world.fog ? { near: world.fog.near, far: world.fog.far } : null
-    regionClient.open(next.region.seed)
+    previousFog = environment.baseFog?.() ?? (world.fog ? { near: world.fog.near, far: world.fog.far } : null)
+    distant.setActive(viewDistance > 400 && map.region.buildings !== false)
+    regionClient.open(next.region.seed, next.region.fingerprint)
   }
 
   function leave() {
@@ -141,6 +157,7 @@ export function withRegion(environment, world, { sound } = {}) {
     group.visible = false
     near.clear()
     far.clear()
+    distant.clear()
     whole.clear()
     clearRoutes()
     transit.dispose()
@@ -150,12 +167,17 @@ export function withRegion(environment, world, { sound } = {}) {
     loadingFar = false
     loadingWhole = false
     wholeShown = false
+    distantInFlight = 0
+    distantPending.clear()
+    distantLastFocus = null
+    distantFilterKey = ''
     setOverview(false)
     walls = new Map()
     lineKey = ''
     lineGrid = new Map()
     nearRaw = null
     nearShownKey = ''
+    visibleBuildings = []
     stationGrid = { revision: -1, cells: new Map(), surfaces: [] }
   }
 
@@ -171,7 +193,9 @@ export function withRegion(environment, world, { sound } = {}) {
       environment.drawTown(next, taken, clearOf)
       return
     }
-    if (!map || map.region.seed !== next.region.seed || map.region.buildings !== next.region.buildings) enter(next)
+    if (!map || map.region.seed !== next.region.seed || map.region.buildings !== next.region.buildings
+      || map.region.fingerprint?.division !== next.region.fingerprint?.division
+      || map.region.fingerprint?.lines !== next.region.fingerprint?.lines) enter(next)
     map = next
     fallback = next.region.ground?.plaza ?? fallback
     useLines(next.lines ?? [])
@@ -317,29 +341,115 @@ export function withRegion(environment, world, { sound } = {}) {
 
   // The coarse ground out to the haze, cut again round the player now and then.
   function ensureFar(x, z) {
-    if (loadingFar || (farBox && Math.abs(x - farBox.cx) < FAR.half * 0.45 && Math.abs(z - farBox.cz) < FAR.half * 0.45)) return
+    const { half: farHalf, step: farStep } = farSpecFor(viewDistance)
+    if (loadingFar || (farBox && farBox.farHalf === farHalf && Math.abs(x - farBox.cx) < farHalf * 0.45 && Math.abs(z - farBox.cz) < farHalf * 0.45)) return
     loadingFar = true
     const ticket = generation
-    const cx = Math.round(x / FAR.step) * FAR.step
-    const cz = Math.round(z / FAR.step) * FAR.step
-    const box = clampBox(cx, cz, FAR.half)
-    regionClient.call('window', { ...box, step: FAR.step, buildings: false, streets: false }).then(async ({ window: win }) => {
+    const cx = Math.round(x / farStep) * farStep
+    const cz = Math.round(z / farStep) * farStep
+    const box = clampBox(cx, cz, farHalf)
+    regionClient.call('window', { ...box, step: farStep, buildings: false, streets: false }).then(async ({ window: win }) => {
       if (ticket !== generation) return
       const started = performance.now()
       const shown = await far.show(win, { datum: FAR.sink, roads: false, borders: false })
       if (shown === false || ticket !== generation) return
       stats.far = Math.round(performance.now() - started)
       far.setHole(nearBox)
-      farBox = { ...box, cx, cz }
+      farBox = { ...box, cx, cz, farHalf }
       whole.setHole(farBox)
     }).catch(report).finally(() => {
       if (ticket === generation) loadingFar = false
     })
   }
 
+  function makeBuildingFilter() {
+    return buildingFilter({
+      claims: claimIndex(map.districts ?? []),
+      built: map.region.buildings !== false,
+      rects: lotRects(map, lots),
+      offLine: lineGrid.size ? offTheLine : null,
+      cleared: map.cleared ?? [],
+    })
+  }
+
+  function ensureDistantFilter() {
+    if (!map) return
+    const key = townKey()
+    if (key === distantFilterKey) return
+    distantFilterKey = key
+    distant.setFilter(makeBuildingFilter())
+  }
+
+  function pumpDistant(x, z) {
+    if (!map || !ready() || regionClient.status.legacy || viewDistance <= 400 || map.region.buildings === false) {
+      distant.setActive(false)
+      if (viewDistance <= 400 || map?.region.buildings === false) {
+        distant.clear()
+        stats.distantTiles = 0
+      }
+      return
+    }
+    distant.setActive(true)
+    ensureDistantFilter()
+    const boxDist = (tx, tz, px, pz) => {
+      const tcx = (tx + 0.5) * DISTANT_TILE
+      const tcz = (tz + 0.5) * DISTANT_TILE
+      return Math.hypot(Math.max(0, Math.abs(px - tcx) - DISTANT_TILE * 0.5), Math.max(0, Math.abs(pz - tcz) - DISTANT_TILE * 0.5))
+    }
+    const keepReach = viewDistance + 1000
+    for (const tKey of distant.loadedTileKeys()) {
+      const [tx, tz] = tKey.split(',').map(Number)
+      if (boxDist(tx, tz, x, z) > keepReach) distant.removeTile(tx, tz)
+    }
+    stats.distantTiles = distant.loadedTileKeys().length
+    if (distantInFlight >= DISTANT_MAX_INFLIGHT) return
+    const wantBoxReach = viewDistance + 1000
+    const maxTile = Math.floor(SIZE / DISTANT_TILE) - 1
+    const tx0 = Math.max(0, Math.floor((x - wantBoxReach) / DISTANT_TILE))
+    const tx1 = Math.min(maxTile, Math.floor((x + wantBoxReach) / DISTANT_TILE))
+    const tz0 = Math.max(0, Math.floor((z - wantBoxReach) / DISTANT_TILE))
+    const tz1 = Math.min(maxTile, Math.floor((z + wantBoxReach) / DISTANT_TILE))
+    const needed = []
+    for (let tz = tz0; tz <= tz1; tz++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
+        const key = `${tx},${tz}`
+        if (distant.hasTile(tx, tz) || distantPending.has(key)) continue
+        const dist = boxDist(tx, tz, x, z)
+        if (dist <= viewDistance) {
+          const qx = Math.floor(tx / 2)
+          const qz = Math.floor(tz / 2)
+          const qDist = Math.hypot((qx + 0.5) * 4000 - x, (qz + 0.5) * 4000 - z)
+          needed.push({ tx, tz, key, dist, qDist })
+        }
+      }
+    }
+    if (!needed.length) return
+    needed.sort((a, b) => (Math.floor(a.qDist / 100) - Math.floor(b.qDist / 100)) || (a.dist - b.dist))
+    const ticket = generation
+    for (const item of needed) {
+      if (distantInFlight >= DISTANT_MAX_INFLIGHT) break
+      distantPending.add(item.key)
+      distantInFlight++
+      regionClient.call('buildingTile', { tx: item.tx, tz: item.tz }).then((reply) => {
+        if (ticket !== generation || !map || viewDistance <= 400) return
+        if (boxDist(item.tx, item.tz, focusAt.x, focusAt.z) <= keepReach && !reply.missing) {
+          distant.addTile(reply)
+          stats.distantTiles = distant.loadedTileKeys().length
+        }
+      }).catch(report).finally(() => {
+        distantPending.delete(item.key)
+        if (ticket === generation) {
+          distantInFlight = Math.max(0, distantInFlight - 1)
+          pumpDistant(focusAt.x, focusAt.z)
+        }
+      })
+    }
+  }
+
   // What of the town the near window shows: the districts and how they are managed, the town's
-  // own lots and their heights, the monorail and whether the town keeps the region's buildings.
-  const townKey = () => `${claimsKey(map?.districts)}|${JSON.stringify(padsOf(map, lots))}|${lineKey}|${map?.region.buildings}`
+  // own lots and their heights, the monorail, whether the town keeps the region's buildings, and
+  // any existing region buildings that players have demolished.
+  const townKey = () => `${claimsKey(map?.districts)}|${clearedKey(map?.cleared)}|${JSON.stringify(padsOf(map, lots))}|${lineKey}|${map?.region.buildings}`
 
   // The detailed ground round the player, with its roads, streets and buildings.
   function ensureNear(x, z) {
@@ -380,12 +490,7 @@ export function withRegion(environment, world, { sound } = {}) {
     const ticket = generation
     const key = townKey()
     const started = performance.now()
-    const keep = buildingFilter({
-      claims: claimIndex(map.districts ?? []),
-      built: map.region.buildings !== false,
-      rects: lotRects(map, lots),
-      offLine: lineGrid.size ? offTheLine : null,
-    })
+    const keep = makeBuildingFilter()
     const buildings = raw.buildings.filter(keep)
     const ground = padGround(raw, padsOf(map, lots))
     const plaza = ground.pads.find((pad) => pad.kind === 'plaza')
@@ -396,10 +501,13 @@ export function withRegion(environment, world, { sound } = {}) {
       paving: plaza?.pave ? [{ ...plaza.pave, y: plaza.y }] : [],
     })
     if (shown === false || ticket !== generation) return
+    visibleBuildings = buildings
     Object.assign(stats, { near: Math.round(performance.now() - started), nearBuildings: buildings.length, hidden: raw.buildings.length - buildings.length })
     nearBox = box
     nearShownKey = key
     far.setHole(nearBox)
+    distant.setNearBox(nearBox)
+    ensureDistantFilter()
     wallsOf(near.solids)
     regionClient.markShown()
   }
@@ -469,10 +577,13 @@ export function withRegion(environment, world, { sound } = {}) {
     return fallback
   }
 
-  function setOverview(next) {
+  function setOverview(next, cameraDistance = 0) {
     overview = next
     routes.visible = next
     whole.group.visible = next
+    // In whole-continent strategic map view (>13 km altitude), every house is sub-pixel, so
+    // pause full-detail 10 km instanced draws until zoomed back into cityscape range.
+    distant.setPaused(Boolean(next) && cameraDistance > 13000)
     if (world.fog && previousFog) {
       world.fog.near = next ? SIZE * 2.5 : previousFog.near
       world.fog.far = next ? SIZE * 6 : previousFog.far
@@ -480,10 +591,30 @@ export function withRegion(environment, world, { sound } = {}) {
     world.background = next && world.fog ? world.fog.color : previousBackground
   }
 
+  function setBuildingDistance(next) {
+    const dist = Math.min(10000, Math.max(400, Math.round(Number(next) || 400)))
+    viewDistance = dist
+    previousFog = environment.setViewDistance?.(dist) ?? previousFog
+    if (!overview && world.fog && previousFog) {
+      world.fog.near = previousFog.near
+      world.fog.far = previousFog.far
+    }
+    if (map) {
+      ensureFar(focusAt.x, focusAt.z)
+      distantLastFocus = [focusAt.x, focusAt.z]
+      pumpDistant(focusAt.x, focusAt.z)
+    } else if (dist <= 400) {
+      distant.setActive(false)
+      distant.clear()
+      stats.distantTiles = 0
+    }
+    return viewDistance
+  }
+
   function update(delta, focus, immersive, view) {
     environment.update(delta, focus, immersive)
     if (!map) return
-    setOverview(Boolean(view?.overview) && !immersive)
+    setOverview(Boolean(view?.overview) && !immersive, view?.cameraDistance ?? 0)
     focusAt.copy(view?.player ?? focus)
     // The shadow box follows the ground up and down.
     const { sun, sunDirection } = environment
@@ -493,6 +624,10 @@ export function withRegion(environment, world, { sound } = {}) {
       ensureWhole()
       ensureFar(focusAt.x, focusAt.z)
       ensureNear(focusAt.x, focusAt.z)
+      if (!distantLastFocus || Math.hypot(focusAt.x - distantLastFocus[0], focusAt.z - distantLastFocus[1]) >= 250) {
+        distantLastFocus = [focusAt.x, focusAt.z]
+        pumpDistant(focusAt.x, focusAt.z)
+      }
     }
   }
 
@@ -513,6 +648,8 @@ export function withRegion(environment, world, { sound } = {}) {
       quality = next
       environment.setQuality(next)
     },
+    setBuildingDistance,
+    buildingDistance: () => viewDistance,
     get region() {
       return Boolean(map)
     },
@@ -565,6 +702,46 @@ export function withRegion(environment, world, { sound } = {}) {
       }
       if (station < Infinity) return point.copy(ray.direction).multiplyScalar(station).add(ray.origin)
       return false
+    },
+    // Finds the nearest visible existing generated building hit by `ray` (within 220 m), for
+    // clicking/hovering to demolish an existing building.
+    pickRegionBuilding(ray) {
+      if (!map || !visibleBuildings.length) return null
+      const box3 = new THREE.Box3()
+      const hitPt = new THREE.Vector3()
+      let best = null
+      for (const b of visibleBuildings) {
+        const c = b.corners
+        const cx = (c[0] + c[2] + c[4] + c[6]) * 0.25
+        const cz = (c[1] + c[3] + c[5] + c[7]) * 0.25
+        const dx = cx - ray.origin.x
+        const dz = cz - ray.origin.z
+        if (dx * dx + dz * dz > 220 * 220) continue
+        const x0 = Math.min(c[0], c[2], c[4], c[6])
+        const x1 = Math.max(c[0], c[2], c[4], c[6])
+        const z0 = Math.min(c[1], c[3], c[5], c[7])
+        const z1 = Math.max(c[1], c[3], c[5], c[7])
+        const baseY = Number.isFinite(b.baseY) ? b.baseY : terrainAt(cx, cz) - 0.5
+        const padY = Number.isFinite(b.padY) ? b.padY : terrainAt(cx, cz)
+        const topY = padY + Math.max(1, b.floors || 1) * 3.1 + 2.2
+        box3.min.set(x0, baseY, z0)
+        box3.max.set(x1, topY, z1)
+        const hit = ray.intersectBox(box3, hitPt)
+        if (!hit) continue
+        const range = ray.origin.distanceTo(hit)
+        if (!best || range < best.range) {
+          best = {
+            cx, cz, x0, x1, z0, z1, baseY, padY, topY,
+            w: Math.hypot(c[2] - c[0], c[3] - c[1]),
+            d: Math.hypot(c[6] - c[0], c[7] - c[1]),
+            angle: Math.atan2(c[3] - c[1], c[2] - c[0]),
+            floors: b.floors || 1,
+            use: b.use ?? 0,
+            range,
+          }
+        }
+      }
+      return best
     },
     // Keeps the camera out of the hillside.
     keepAbove(position) {
@@ -654,6 +831,7 @@ export function withRegion(environment, world, { sound } = {}) {
     reach: () => (map ? regionOverview(SIZE, 0.35).distance : 260),
     dispose() {
       leave()
+      distant.dispose()
       transit.dispose()
       world.remove(group)
       environment.dispose()

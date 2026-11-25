@@ -6,8 +6,8 @@ import * as THREE from 'three'
 import { createAvatars } from './world/avatars.js?v=8'
 import { SHOP_HOUSES, createBuilding } from './world/buildings.js'
 import { BODY as RADIUS, colliders, floorHeight, frontDoors, storeyShape, yardHeight } from './world/design.js'
-import { createEnvironment } from './world/environment.js?v=7'
-import { withRegion } from './world/region-layer.js?v=4'
+import { createEnvironment } from './world/environment.js?v=8'
+import { withRegion } from './world/region-layer.js?v=7'
 import { FIRST_PERSON_LAYER, THIRD_PERSON_LAYER } from './world/first-person.js?v=1'
 import { updateGlass } from './world/glass.js'
 import { TILE, disposeGroup, setAnisotropy, setDetail, textTexture } from './world/kit.js'
@@ -130,6 +130,7 @@ export function initScene(container, callbacks = {}) {
   // (In a town made from the region map, the region's ground, buildings and monorail.)
   const sound = createSound()
   const environment = withRegion(createEnvironment(world, renderer), world, { sound })
+  let buildingDistance = 400
   const town = new THREE.Group()
   const markers = new THREE.Group()
   world.add(town, markers)
@@ -762,7 +763,7 @@ export function initScene(container, callbacks = {}) {
       selected.scale.set(TILE * 0.94, TILE * 0.94, 1)
       selected.position.set((state.selected.x - map.originX) * TILE, environment.heightAt((state.selected.x - map.originX) * TILE, (state.selected.z - map.originZ) * TILE) + 0.12, (state.selected.z - map.originZ) * TILE)
     }
-    if (!editing) hover.visible = false
+    if (!editing && !state.clearingExisting) hover.visible = false
   }
 
   function update(next) {
@@ -1197,7 +1198,8 @@ export function initScene(container, callbacks = {}) {
     let reach = draft ? THREE.MathUtils.clamp(distance, 6, 60) : mode === 'close' ? 3.4 : indoors ? THREE.MathUtils.clamp(distance, 3, 14) : distance
     const wholeRegion = mapView && environment.region && reach > 1800
     const near = wholeRegion ? Math.max(0.1, reach / 4000) : 0.1
-    const far = wholeRegion ? Math.max(5200, reach + 40000) : 5200
+    const baseFar = Math.max(5200, buildingDistance * 2.5)
+    const far = wholeRegion ? Math.max(baseFar, reach + 40000) : baseFar
     if (camera.near !== near || camera.far !== far) {
       camera.near = near
       camera.far = far
@@ -1278,6 +1280,11 @@ export function initScene(container, callbacks = {}) {
   // Sends whatever the current ray points at to the app: a building, a road or open ground.
   function activate(byHand = false) {
     if (!state.town || !state.player || designing()) return
+    if (state.clearingExisting && environment.pickRegionBuilding) {
+      const hit = environment.pickRegionBuilding(raycaster.ray)
+      if (hit) callbacks.onClearBuilding?.(hit)
+      return
+    }
     // Pointing at a button of a lift presses it; pointing at a door within reach opens or closes it.
     if (!state.edit) {
       const button = liftButtonAlong(raycaster.ray)
@@ -1404,12 +1411,25 @@ export function initScene(container, callbacks = {}) {
         pencil('hover')
         return
       }
+      if (state.clearingExisting && environment.pickRegionBuilding) {
+        castFrom(event.clientX, event.clientY)
+        const hit = environment.pickRegionBuilding(raycaster.ray)
+        hover.visible = Boolean(hit)
+        if (hit) {
+          hover.material.color.set('#ff5a5a')
+          hover.rotation.set(-Math.PI / 2, 0, -hit.angle)
+          hover.scale.set(hit.w + 0.6, hit.d + 0.6, 1)
+          hover.position.set(hit.cx, hit.topY + 0.15, hit.cz)
+        }
+        return
+      }
       if (!state.edit) return
       // Show which tiles a click would use.
       castFrom(event.clientX, event.clientY)
       const ground = groundTile()
       const size = state.placing ?? { w: 1, d: 1 }
       hover.visible = Boolean(ground)
+      hover.rotation.set(-Math.PI / 2, 0, 0)
       environment.tint(hover, ground, size)
       if (ground) {
         hover.scale.set(size.w * TILE * 0.96, size.d * TILE * 0.96, 1)
@@ -2027,7 +2047,7 @@ export function initScene(container, callbacks = {}) {
       frameView()
     }
     placeSketch()
-    environment.update(delta, focus, immersive(), { player: here, overview: mode === 'overview' && !home && !designing() && distance > 1800 })
+    environment.update(delta, focus, immersive(), { player: here, overview: mode === 'overview' && !home && !designing() && distance > 1800, cameraDistance: distance })
     camera.updateMatrixWorld(true)
     const view = xrPose ? point.set(xrPose.head[0], xrPose.head[1], xrPose.head[2]).add(here)
       : immersive() ? camera.getWorldPosition(point) : camera.position
@@ -2070,6 +2090,13 @@ export function initScene(container, callbacks = {}) {
     setDetail(quality === 'high' ? 2 : quality === 'medium' ? 1 : 0)
     environment.setQuality(quality)
     resize()
+  }
+
+  function setBuildingDistance(next) {
+    buildingDistance = Math.min(10000, Math.max(400, Math.round(Number(next) || 400)))
+    if (environment.setBuildingDistance) environment.setBuildingDistance(buildingDistance)
+    else environment.setViewDistance?.(buildingDistance)
+    return buildingDistance
   }
 
   setQuality(coarse ? 'low' : 'medium')
@@ -2117,8 +2144,10 @@ export function initScene(container, callbacks = {}) {
     },
     setCamera,
     setQuality,
+    setBuildingDistance,
     camera: () => mode,
     quality: () => quality,
+    buildingDistance: () => buildingDistance,
     // How many pixels of each edge of the screen are covered by panels.
     setInsets(next = {}) {
       for (const side of ['left', 'right', 'top', 'bottom']) insets[side] = Math.max(0, Number(next[side]) || 0)

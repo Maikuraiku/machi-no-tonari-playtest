@@ -11,17 +11,21 @@ import { LAND, riverAlong } from './terrain.js'
 export const USE = {
   WATER: 0, RIVERBED: 1, FOREST: 2, GREEN: 3, FIELD: 4, PADDY: 5, PARK: 6,
   LOW: 7, DENSE: 8, MID: 9, HIGH: 10, COMMERCIAL: 11, INDUSTRIAL: 12, PUBLIC: 13,
+  ROADSIDE_COM: 14, STATION_HUB: 15,
 }
-export const BUILT_USES = new Set([USE.LOW, USE.DENSE, USE.MID, USE.HIGH, USE.COMMERCIAL, USE.INDUSTRIAL, USE.PUBLIC])
+export const BUILT_USES = new Set([
+  USE.LOW, USE.DENSE, USE.MID, USE.HIGH, USE.COMMERCIAL, USE.INDUSTRIAL, USE.PUBLIC,
+  USE.ROADSIDE_COM, USE.STATION_HUB,
+])
 
 export const ROAD = { STREET: 1, COLLECTOR: 2, ARTERIAL: 3, TRUNK: 4 }
 export const ROAD_WIDTH = [0, 5, 11, 20, 27] // metres from edge to edge, pavements included
 
 // The years the simulation steps through. `built` stores an index into this list (0: never).
-export const ERAS = [0, 1700, 1925, 1940, 1955, 1965, 1975, 1990, 2005, 2020]
+export const ERAS = [0, 1700, 1925, 1940, 1955, 1965, 1975, 1990, 2005, 2020, 2025]
 const ERA = Object.fromEntries(ERAS.map((year, index) => [year, index]))
 // Share of the buildable land that is built on by each year.
-const GROWTH = [[1925, 0.07], [1940, 0.16], [1955, 0.31], [1965, 0.48], [1975, 0.64], [1990, 0.76], [2005, 0.82], [2020, 0.86]]
+const GROWTH = [[1925, 0.07], [1940, 0.16], [1955, 0.31], [1965, 0.48], [1975, 0.64], [1990, 0.76], [2005, 0.82], [2020, 0.855], [2025, 0.87]]
 
 // Roads are planned as paths between the cells of a 40 m grid. Paths that share cells share
 // road, and crossings always meet at a cell, so the network stays connected and planar.
@@ -864,6 +868,7 @@ const BASE_PRICE = {
   [USE.WATER]: 0, [USE.RIVERBED]: 0, [USE.FOREST]: 4.5, [USE.GREEN]: 9, [USE.FIELD]: 14, [USE.PADDY]: 11,
   [USE.PARK]: 22, [USE.LOW]: 48, [USE.DENSE]: 54, [USE.MID]: 68, [USE.HIGH]: 92,
   [USE.COMMERCIAL]: 125, [USE.INDUSTRIAL]: 34, [USE.PUBLIC]: 36,
+  [USE.ROADSIDE_COM]: 82, [USE.STATION_HUB]: 215,
 }
 
 // Simulates land price (地価, 万円/m²) across every 20 m cell of the region, accounting for:

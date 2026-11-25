@@ -10,6 +10,7 @@ export function preloadBuildings(region, progress = () => {}) {
   const { size } = region
   const columns = Math.ceil(size / TILE)
   const tiles = []
+  const grid = new Array(columns * columns).fill(null)
   let count = 0
   for (let row = 0; row < columns; row++) {
     for (let column = 0; column < columns; column++) {
@@ -61,7 +62,9 @@ export function preloadBuildings(region, progress = () => {}) {
           bounds[3] = Math.max(bounds[3], cz)
         }
       }
-      tiles.push({ corners, lots, tiers, floors, uses, tones, bounds })
+      const tileEntry = { corners, lots, tiers, floors, uses, tones, bounds }
+      tiles.push(tileEntry)
+      grid[column + row * columns] = tileEntry
       count += owned.length
     }
     progress((row + 1) / columns)
@@ -92,5 +95,6 @@ export function preloadBuildings(region, progress = () => {}) {
     }
     return out
   }
-  return { count, inWindow }
+  const tileAt = (tx, tz) => (tx >= 0 && tz >= 0 && tx < columns && tz < columns ? grid[tx + tz * columns] : null)
+  return { count, columns, tileSize: TILE, tileAt, inWindow }
 }

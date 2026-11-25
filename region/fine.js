@@ -19,8 +19,8 @@ export function streamGeometry(terrain, city, size) {
     const km2 = area / 1e6
     const entry = {
       points,
-      width: 1.6 + 2.2 * Math.sqrt(km2),
-      depth: 1.3 + 0.35 * Math.sqrt(km2),
+      width: stream.width ?? (1.8 + 2.4 * Math.sqrt(km2)),
+      depth: stream.depth ?? (1.3 + 0.35 * Math.sqrt(km2)),
       covered: Boolean(stream.covered),
       area,
     }
@@ -71,13 +71,11 @@ export function createFineTerrain(region) {
       const levee = level + crest - Math.max(0, fromCrest - 6) * 0.5
       if (levee > height) height = levee
     } else {
-      height = bicubic(city.ground, columns, cell, x, z)
-      if (city.newtown[at]) height = Math.round(height / 3) * 3
-      else if (use === USE.PADDY) height = Math.round(height / 0.4) * 0.4
-      else if (BUILT_USES.has(use)) {
-        if (terrain.slope[at] > 0.04) height = Math.round(height / 1.4) * 1.4
-      } else if (use === USE.FOREST || use === USE.GREEN || use === USE.PARK) {
-        height += 0.45 * fbm(seed + 702, x / 14, z / 14, 3)
+      const fineH = region.terrain5mCache?.heightAt?.(x, z)
+      height = Number.isFinite(fineH) ? fineH : bicubic(city.ground, columns, cell, x, z)
+      if (use === USE.PADDY) height = Math.round(height / 0.4) * 0.4
+      else if (use === USE.FOREST || use === USE.GREEN || use === USE.PARK) {
+        height += 0.35 * fbm(seed + 702, x / 14, z / 14, 3)
       } else if (use === USE.FIELD) {
         const angle = city.fieldAngle?.[at] ?? 0
         const across = -Math.sin(angle) * x + Math.cos(angle) * z
@@ -106,10 +104,23 @@ export function createFineTerrain(region) {
       if (hit && !hit.covered) {
         const distance = Math.sqrt(nearest)
         const half = hit.width / 2
-        if (distance < half) {
-          height -= hit.depth
-          water = WATER.STREAM
-        } else if (distance < half + 2) height -= hit.depth * (1 - (distance - half) / 2)
+        if (region.isExtremeSim) {
+          // 5m terrain already carries wide carved stream valleys (`carveStreamValleyTroughs`);
+          // apply a smooth 1m local channel & immediate bank lip without slow broad spatial searches.
+          const lipW = Math.min(6.0, 2.0 + hit.width * 0.35)
+          if (distance < half) {
+            height -= hit.depth
+            water = WATER.STREAM
+          } else if (distance < half + lipW) {
+            const t = (distance - half) / lipW
+            height -= hit.depth * (1 - t * t * (3 - 2 * t))
+          }
+        } else {
+          if (distance < half) {
+            height -= hit.depth
+            water = WATER.STREAM
+          } else if (distance < half + 2) height -= hit.depth * (1 - (distance - half) / 2)
+        }
       }
     }
     out.water = water
@@ -125,10 +136,10 @@ export function createFineTerrain(region) {
     // The streams of the box, sorted into buckets of 64 m (each with the segments that come within
     // reach of it), so that a large box costs no more per pixel than a small one.
     const BUCKET = 64
-    const REACH = 12
+    const REACH = 22
     const buckets = new Map()
     let any = false
-    region.streams.index.inBox(x0 - 20, z0 - 20, x0 + w * step + 20, z0 + h * step + 20, (segment) => {
+    region.streams.index.inBox(x0 - REACH, z0 - REACH, x0 + w * step + REACH, z0 + h * step + REACH, (segment) => {
       any = true
       const i0 = Math.floor((Math.min(segment.ax, segment.bx) - REACH) / BUCKET)
       const i1 = Math.floor((Math.max(segment.ax, segment.bx) + REACH) / BUCKET)
@@ -160,10 +171,10 @@ export function createFineTerrain(region) {
   function nearStreams(streams, x, z) {
     let list = null
     for (const segment of streams) {
-      const minX = Math.min(segment.ax, segment.bx) - 12
-      const maxX = Math.max(segment.ax, segment.bx) + 12
-      const minZ = Math.min(segment.az, segment.bz) - 12
-      const maxZ = Math.max(segment.az, segment.bz) + 12
+      const minX = Math.min(segment.ax, segment.bx) - 22
+      const maxX = Math.max(segment.ax, segment.bx) + 22
+      const minZ = Math.min(segment.az, segment.bz) - 22
+      const maxZ = Math.max(segment.az, segment.bz) + 22
       if (x < minX || x > maxX || z < minZ || z > maxZ) continue
       ;(list ??= []).push(segment)
     }
@@ -172,7 +183,7 @@ export function createFineTerrain(region) {
 
   function heightAt(x, z) {
     const streams = []
-    region.streams.index.near(x, z, 20, (segment) => streams.push(segment))
+    region.streams.index.near(x, z, 22, (segment) => streams.push(segment))
     const out = { water: 0 }
     const height = sample(x, z, streams.length ? streams : null, out)
     return { height, water: out.water }

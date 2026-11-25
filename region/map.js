@@ -1,11 +1,16 @@
-// The region map page. A worker generates the region and draws the ground as tiles; this page
-// lays the tiles out, draws roads, streams and railways over them, and shows the numbers, the
-// railway lines and each line's vertical profile.
+// The region map page. A worker generates or loads the region (Extreme Deep 5m CLI pack when
+// available, or browser fallback) and draws map tiles on request. This page lays out tiles,
+// renders 1700-2025 historical timeline playback, BPR traffic congestion, Kokubunji springs,
+// 44-format commercial shops & vacancies, rail vertical profiles, and triggers server CLI runs.
 import { ROAD, ROAD_WIDTH } from './develop.js'
 import { STRUCTURE, STRUCTURE_NAMES } from './rail.js'
 import { regionSeed } from './region.js'
 import { createGameLink } from './game-link.js'
-import { COST_STOPS, ERA_COLORS, ERA_LABELS, HEIGHT_STOPS, LAYERS, LEVELS, PEOPLE_STOPS, PRICE_STOPS, TILE, USE_STYLE, metresPerPixel } from './render.js'
+import {
+  AGING_STOPS, COST_STOPS, ERA_COLORS, ERA_LABELS, GEOLOGY_STYLE, HAZARD_STOPS,
+  HEIGHT_STOPS, LAYERS, LEVELS, PEOPLE_STOPS, PRICE_STOPS, TILE, USE_STYLE, ZONING_STYLE,
+  metresPerPixel,
+} from './render.js'
 
 const $ = (selector, root = document) => root.querySelector(selector)
 const FONT = '"Yu Gothic UI", "Hiragino Sans", "Noto Sans JP", Meiryo, system-ui, sans-serif'
@@ -15,6 +20,24 @@ const DIFFICULTY_COLORS = ['', '#7cc68a', '#c6dd77', '#f2c84b', '#ef8a3c', '#d24
 const DIFFICULTY_NAMES = ['', 'やさしい', 'ふつう', 'やや難しい', '難しい', '非常に難しい']
 const ROAD_PX = { [ROAD.COLLECTOR]: 1.1, [ROAD.ARTERIAL]: 2.2, [ROAD.TRUNK]: 3 }
 const ROAD_FILL = { [ROAD.COLLECTOR]: '#ffffff', [ROAD.ARTERIAL]: '#fff4cf', [ROAD.TRUNK]: '#ffe19a' }
+const LOC_LABELS = {
+  kaido: '旧街道・宿場沿い',
+  station: '駅前・商業核',
+  shoppingSt: '商店街通り',
+  roadside: '幹線ロードサイド',
+  residential: '住宅街・生活道路',
+}
+const SHOP_FILTERS = [
+  { id: 'all', label: 'すべて' },
+  { id: 'edo', label: '江戸・伝統' },
+  { id: 'trad_retail', label: '個人商店' },
+  { id: 'modern_retail', label: '現代チェーン' },
+  { id: 'large_retail', label: '大型商業' },
+  { id: 'dining', label: '飲食・カフェ' },
+  { id: 'medical', label: '医療・介護' },
+  { id: 'service', label: '生活サービス' },
+  { id: 'vacant', label: '空き店舗' },
+]
 const MAX_INFLIGHT = 2
 
 const canvas = $('#map')
@@ -22,12 +45,33 @@ const ctx = canvas.getContext('2d')
 const state = {
   seed: null,
   ready: false,
+  isExtremeSim: false,
   summary: null,
   overlay: null,
   // The region's fingerprints ({ division, lines }) from the worker, for game-link.js.
   fingerprint: null,
   layer: 'relief',
-  show: { roads: true, traffic: false, streams: true, rail: true, labels: true, desire: false, districts: true },
+  year: 2025,
+  playing: false,
+  playTimer: 0,
+  shopFilter: 'all',
+  shopCodeFilter: '',
+  selectedShop: null,
+  cliPollTimer: 0,
+  show: {
+    roads: true,
+    trafficLaw: true,
+    traffic: false,
+    streams: true,
+    springs: false,
+    rail: true,
+    labels: true,
+    slopes: true,
+    urbanNodes: true,
+    shops: true,
+    desire: false,
+    districts: true,
+  },
   district: -1,
   view: { cx: 10000, cz: 10000, mpp: 40 },
   selected: -1,
@@ -69,7 +113,7 @@ function startWorker() {
   tileRequests.clear()
   inflight = 0
   queue = []
-  worker = new Worker(new URL('./worker.js?v=3', import.meta.url), { type: 'module' })
+  worker = new Worker(new URL('./worker.js?v=5', import.meta.url), { type: 'module' })
   worker.onmessage = (event) => onMessage(event.data)
   worker.onerror = (event) => {
     event.preventDefault?.()
@@ -102,20 +146,28 @@ function onMessage(message) {
 
 let watchdog = 0
 function generate(text, attempt = 0) {
+  stopPlayback()
   const seed = regionSeed(text)
   state.seed = seed
   state.ready = false
+  state.isExtremeSim = false
   state.heard = false
   state.summary = null
   state.overlay = null
   state.fingerprint = null
   state.selected = -1
   state.district = -1
+  state.selectedShop = null
   state.marker = null
-  for (const id of ['summary', 'eras', 'lines', 'line-detail', 'export', 'district']) $('#' + id).hidden = true
+  for (const id of ['summary', 'eras', 'lines', 'line-detail', 'export', 'district', 'shop-detail', 'commerce', 'timeline-bar']) {
+    const el = $('#' + id)
+    if (el) el.hidden = true
+  }
+  const badge = $('#sim-badge')
+  if (badge) badge.hidden = true
   $('#readout').hidden = true
   startWorker()
-  showStatus(attempt ? '計算の部品の読み込みに時間がかかったので、もう一度始めています…' : '土地を生成しています…')
+  showStatus(attempt ? '計算の部品の読み込みに時間がかかったので、もう一度始めています…' : '土地を読み込んでいます…')
   showProgress('準備', 0, 0)
   worker.postMessage({ type: 'generate', seed })
   saveHash()
@@ -131,15 +183,33 @@ function generate(text, attempt = 0) {
 
 function onReady(message) {
   state.ready = true
+  state.isExtremeSim = Boolean(message.isExtremeSim)
   state.summary = message.summary
   state.overlay = prepareOverlay(message.overlay)
   state.fingerprint = message.fingerprint ?? null
+  const years = state.overlay.years ?? [2025]
+  if (!years.includes(state.year)) state.year = years[years.length - 1]
   $('#progress').hidden = true
   showStatus(null)
   if (!state.fitted) fitView()
   state.fitted = true
+
+  const badge = $('#sim-badge')
+  if (badge) {
+    badge.hidden = false
+    if (state.isExtremeSim) {
+      badge.className = 'sim-badge'
+      badge.textContent = state.summary.has5mTerrain ? '5m超極限CLI' : '20m高速CLI'
+    } else {
+      badge.className = 'sim-badge fallback'
+      badge.textContent = 'ブラウザ簡易'
+    }
+  }
+
   const wanted = state.pendingLine
   state.pendingLine = null
+  renderTimeline()
+  renderCommerce()
   renderSummary()
   renderEras()
   renderLines()
@@ -218,7 +288,10 @@ function prepareOverlay(data) {
       borders[kind].lineTo(segments[k + 2], segments[k + 3])
     }
   }
-  return { ...data, paths: { roads, covered, borders }, maxLoad }
+  // Shop catalog quick lookup by id
+  const shopCatalog = new Map()
+  for (const entry of data.catalogs?.shops ?? []) shopCatalog.set(entry.id, entry)
+  return { ...data, paths: { roads, covered, borders }, maxLoad, shopCatalog }
 }
 
 // The district (丁目) at a point of the map, or -1.
@@ -270,7 +343,6 @@ function clampView() {
   const most = size / Math.max(80, Math.min(state.cssW, state.cssH)) * 1.6
   view.mpp = Math.min(most, Math.max(0.12, view.mpp))
   view.cx = Math.min(size * 1.05, Math.max(-size * 0.05, view.cx))
-  // The centre of what can be seen (above the panel on a phone) stays near the region.
   const hidden = (state.cssH - visibleHeight()) / 2 * view.mpp
   view.cz = Math.min(size * 1.05 + hidden, Math.max(-size * 0.05 + hidden, view.cz))
 }
@@ -323,8 +395,16 @@ function levelFor() {
   return Math.max(0, Math.min(LEVELS - 1, level))
 }
 
-function tileKey(layer, level, tx, tz) {
-  return `${layer}/${level}/${tx}/${tz}`
+// Layers whose raster or building footprints change with historical `state.year`
+function effectiveTileYear(layer, level) {
+  if (!state.isExtremeSim) return 2025
+  if (layer === 'use' || layer === 'price' || layer === 'people') return state.year
+  if (level >= 5 && layer !== 'natural' && layer !== 'geology' && layer !== 'cost') return state.year
+  return 2025
+}
+
+function tileKey(layer, year, level, tx, tz) {
+  return `${layer}/${year}/${level}/${tx}/${tz}`
 }
 
 function draw() {
@@ -348,6 +428,7 @@ function draw() {
 function drawTiles(k, ox, oy) {
   const size = regionSize()
   const level = levelFor()
+  const tYear = effectiveTileYear(state.layer, level)
   const span = metresPerPixel(size, level) * TILE
   const n = 2 ** level
   const tx0 = Math.max(0, Math.floor(-ox / k / span))
@@ -357,7 +438,7 @@ function drawTiles(k, ox, oy) {
   const wanted = []
   for (let tz = tz0; tz <= tz1; tz++) {
     for (let tx = tx0; tx <= tx1; tx++) {
-      const key = tileKey(state.layer, level, tx, tz)
+      const key = tileKey(state.layer, tYear, level, tx, tz)
       const entry = tiles.get(key)
       const dx = Math.floor(ox + tx * span * k)
       const dy = Math.floor(oy + tz * span * k)
@@ -368,27 +449,26 @@ function drawTiles(k, ox, oy) {
         ctx.drawImage(entry.bitmap, dx, dy, dw, dh)
         continue
       }
-      drawFallback(level, tx, tz, dx, dy, dw, dh)
+      drawFallback(tYear, level, tx, tz, dx, dy, dw, dh)
       if (!entry) {
         const d = Math.hypot((tx + 0.5) * span - state.view.cx, (tz + 0.5) * span - state.view.cz)
-        wanted.push({ key, layer: state.layer, level, tx, tz, d })
+        wanted.push({ key, layer: state.layer, year: tYear, level, tx, tz, d })
       }
     }
   }
   wanted.sort((a, b) => a.d - b.d)
-  // While close-up tiles are missing, a coarse tile three levels up stands in for 64 of them;
-  // it is asked for first so the screen fills quickly.
   if (wanted.length && level >= 3) {
     const up = level - 3
+    const upYear = effectiveTileYear(state.layer, up)
     const seen = new Set()
     const coarse = []
     for (const job of wanted) {
       const tx = job.tx >> 3
       const tz = job.tz >> 3
-      const key = tileKey(state.layer, up, tx, tz)
+      const key = tileKey(state.layer, upYear, up, tx, tz)
       if (seen.has(key) || tiles.has(key)) continue
       seen.add(key)
-      coarse.push({ key, layer: state.layer, level: up, tx, tz, d: -1 })
+      coarse.push({ key, layer: state.layer, year: upYear, level: up, tx, tz, d: -1 })
     }
     wanted.unshift(...coarse)
   }
@@ -397,9 +477,11 @@ function drawTiles(k, ox, oy) {
 }
 
 // Until a tile arrives, a corner of a coarser one stands in for it.
-function drawFallback(level, tx, tz, dx, dy, dw, dh) {
+function drawFallback(tYear, level, tx, tz, dx, dy, dw, dh) {
   for (let up = 1; up <= level; up++) {
-    const parent = tiles.get(tileKey(state.layer, level - up, tx >> up, tz >> up))
+    const pYear = effectiveTileYear(state.layer, level - up)
+    const parent = tiles.get(tileKey(state.layer, pYear, level - up, tx >> up, tz >> up))
+      ?? (pYear !== tYear ? tiles.get(tileKey(state.layer, tYear, level - up, tx >> up, tz >> up)) : null)
     if (!parent?.bitmap) continue
     const part = TILE / 2 ** up
     const sx = (tx - ((tx >> up) << up)) * part
@@ -419,7 +501,10 @@ function pump() {
     tiles.set(job.key, { bitmap: null, used: frame })
     tileRequests.set(id, job.key)
     inflight++
-    worker.postMessage({ type: 'tile', id, seed: state.seed, layer: job.layer, level: job.level, tx: job.tx, tz: job.tz })
+    worker.postMessage({
+      type: 'tile', id, seed: state.seed, layer: job.layer, year: job.year,
+      level: job.level, tx: job.tx, tz: job.tz,
+    })
   }
 }
 
@@ -448,15 +533,22 @@ function onTile(message) {
 }
 
 function evictTiles() {
-  if (tiles.size <= 340) return
+  if (tiles.size <= 380) return
   const old = [...tiles.entries()].filter(([, entry]) => entry.bitmap && entry.used < frame).sort((a, b) => a[1].used - b[1].used)
-  for (const [key, entry] of old.slice(0, tiles.size - 280)) {
+  for (const [key, entry] of old.slice(0, tiles.size - 300)) {
     entry.bitmap.close?.()
     tiles.delete(key)
   }
 }
 
-function trafficColor(load) {
+function trafficColor(load, vcRatio) {
+  if (vcRatio && vcRatio > 0) {
+    if (vcRatio < 0.70) return '#58b368'
+    if (vcRatio < 0.95) return '#c2d64f'
+    if (vcRatio < 1.15) return '#f5b83d'
+    if (vcRatio < 1.35) return '#ee6d2d'
+    return '#bd1e2c'
+  }
   if (load < 2e4) return '#7bbf6a'
   if (load < 8e4) return '#c8d55a'
   if (load < 2e5) return '#f5c242'
@@ -464,10 +556,25 @@ function trafficColor(load) {
   return '#c8322b'
 }
 
+function shopMatchesFilter(shop) {
+  const y = state.year
+  if (shop.typeId === 44) {
+    if (!(shop.closedYear > 0 && shop.closedYear <= y)) return false
+  } else {
+    if (!(shop.openedYear <= y && (!shop.closedYear || shop.closedYear > y))) return false
+  }
+  if (state.shopCodeFilter) return shop.code === state.shopCodeFilter
+  if (state.shopFilter === 'all') return shop.typeId !== 44
+  if (state.shopFilter === 'vacant') return shop.typeId === 44
+  const meta = state.overlay?.shopCatalog?.get(shop.typeId)
+  return meta?.category === state.shopFilter
+}
+
 // Drawn in metres: one CSS pixel is `px` metres.
 function drawWorld() {
   const o = state.overlay
   const px = state.view.mpp
+  const curYear = state.year
   ctx.lineCap = 'round'
   ctx.lineJoin = 'round'
   ctx.strokeStyle = 'rgba(29, 42, 51, 0.4)'
@@ -484,9 +591,22 @@ function drawWorld() {
     }
     ctx.strokeStyle = '#4f97cf'
     for (const stream of o.streams) {
-      if (stream.covered) continue
+      if (stream.covered && curYear >= 1974) continue
       ctx.lineWidth = Math.max(stream.width, (stream.area > 5e6 ? 1.8 : 1.1) * px)
       ctx.stroke(stream.path)
+    }
+  }
+
+  if (state.show.springs && o.springs?.length) {
+    const r = Math.max(18, 4.5 * px)
+    for (const sp of o.springs) {
+      ctx.beginPath()
+      ctx.arc(sp.x, sp.z, r, 0, Math.PI * 2)
+      ctx.fillStyle = '#1d8cd8'
+      ctx.fill()
+      ctx.lineWidth = Math.max(4, 1.8 * px)
+      ctx.strokeStyle = '#ffffff'
+      ctx.stroke()
     }
   }
 
@@ -495,24 +615,42 @@ function drawWorld() {
     for (const kind of kinds) {
       for (const road of o.roads) {
         if (road.kind !== kind) continue
-        ctx.strokeStyle = trafficColor(road.load)
-        ctx.lineWidth = Math.max(ROAD_WIDTH[road.kind], Math.min(9, 0.8 + Math.sqrt(road.load) / 160) * px)
+        if (state.isExtremeSim && (road.eraYear ?? 0) > curYear) continue
+        ctx.strokeStyle = trafficColor(road.load, road.vcRatio)
+        const baseW = ROAD_WIDTH[road.kind] ?? 8
+        ctx.lineWidth = Math.max(baseW, Math.min(9, 0.8 + Math.sqrt(road.load) / 160) * px)
         ctx.stroke(road.path)
       }
     }
   } else if (state.show.roads) {
     const kinds = px > 30 ? [ROAD.ARTERIAL, ROAD.TRUNK] : [ROAD.COLLECTOR, ROAD.ARTERIAL, ROAD.TRUNK]
-    for (const kind of kinds) {
-      ctx.strokeStyle = 'rgba(95, 92, 86, 0.6)'
-      ctx.lineWidth = Math.max(ROAD_WIDTH[kind], ROAD_PX[kind] * px) + Math.max(1.6, 1.3 * px)
-      ctx.stroke(o.paths.roads[kind])
-    }
-    for (const kind of kinds) {
-      ctx.strokeStyle = ROAD_FILL[kind]
-      ctx.lineWidth = Math.max(ROAD_WIDTH[kind], ROAD_PX[kind] * px)
-      ctx.stroke(o.paths.roads[kind])
+    const allYears = !state.isExtremeSim || curYear >= 2025
+    if (allYears) {
+      for (const kind of kinds) {
+        ctx.strokeStyle = 'rgba(95, 92, 86, 0.6)'
+        ctx.lineWidth = Math.max(ROAD_WIDTH[kind], ROAD_PX[kind] * px) + Math.max(1.6, 1.3 * px)
+        ctx.stroke(o.paths.roads[kind])
+      }
+      for (const kind of kinds) {
+        ctx.strokeStyle = ROAD_FILL[kind]
+        ctx.lineWidth = Math.max(ROAD_WIDTH[kind], ROAD_PX[kind] * px)
+        ctx.stroke(o.paths.roads[kind])
+      }
+    } else {
+      for (const pass of [0, 1]) {
+        for (const kind of kinds) {
+          ctx.strokeStyle = pass === 0 ? 'rgba(95, 92, 86, 0.6)' : ROAD_FILL[kind]
+          ctx.lineWidth = Math.max(ROAD_WIDTH[kind], ROAD_PX[kind] * px) + (pass === 0 ? Math.max(1.6, 1.3 * px) : 0)
+          for (const road of o.roads) {
+            if (road.kind !== kind || (road.eraYear ?? 0) > curYear) continue
+            ctx.stroke(road.path)
+          }
+        }
+      }
     }
   }
+
+  if (state.show.trafficLaw && state.isExtremeSim) drawTrafficLawOverlay(px, curYear)
 
   if (state.show.desire) {
     for (const flow of o.desire) {
@@ -528,9 +666,14 @@ function drawWorld() {
   if (state.show.districts) drawDistricts(px)
 
   if (state.show.rail) {
-    const order = [...o.lines].sort((a, b) => (a.id === state.selected) - (b.id === state.selected))
+    const visibleLines = state.isExtremeSim
+      ? o.lines.filter((line) => (line.openedYear ?? 0) <= curYear)
+      : o.lines
+    const order = [...visibleLines].sort((a, b) => (a.id === state.selected) - (b.id === state.selected))
     for (const line of order) drawRail(line, px)
   }
+
+  if (state.show.shops && o.shops?.length) drawShops(px)
 
   if (state.marker) {
     ctx.beginPath()
@@ -539,6 +682,170 @@ function drawWorld() {
     ctx.fill()
     ctx.lineWidth = 3 * px
     ctx.strokeStyle = '#1d2a33'
+    ctx.stroke()
+  }
+}
+
+function drawTrafficLawOverlay(px, curYear) {
+  const o = state.overlay
+  if (!o) return
+  ctx.save()
+  ctx.lineCap = 'round'
+
+  // 1. Roads: Zone 30 (violet halo), Bike Lane (cyan dash), Ped Time Zone (orange dash), One-Way arrows
+  for (let i = 0; i < o.roads.length; i++) {
+    const road = o.roads[i]
+    if ((road.eraYear ?? 0) > curYear) continue
+    if (road.zone30Year > 0 && curYear >= road.zone30Year) {
+      ctx.strokeStyle = 'rgba(138, 75, 175, 0.34)'
+      ctx.lineWidth = Math.max((road.width ?? 8) + 4, 4.2 * px)
+      ctx.stroke(road.path)
+    }
+    if (px < 14 && road.bikeLaneYear > 0 && curYear >= road.bikeLaneYear) {
+      ctx.setLineDash([5 * px, 4 * px])
+      ctx.strokeStyle = 'rgba(26, 140, 255, 0.72)'
+      ctx.lineWidth = Math.max(2.2, 1.5 * px)
+      ctx.stroke(road.path)
+      ctx.setLineDash([])
+    }
+    if (px < 16 && road.pedZoneYear > 0 && curYear >= road.pedZoneYear) {
+      ctx.setLineDash([3 * px, 3 * px])
+      ctx.strokeStyle = 'rgba(230, 126, 34, 0.78)'
+      ctx.lineWidth = Math.max(2.6, 1.8 * px)
+      ctx.stroke(road.path)
+      ctx.setLineDash([])
+    }
+    if (px < 10 && road.oneWay && road.oneWayYear > 0 && curYear >= road.oneWayYear) {
+      const pts = road.points
+      const midIdx = ((pts.length / 2) >> 1) * 2
+      if (midIdx >= 2 && midIdx < pts.length) {
+        const ax = pts[midIdx - 2], az = pts[midIdx - 1]
+        const bx = pts[midIdx], bz = pts[midIdx + 1]
+        const dir = road.oneWay > 0 ? 1 : -1
+        const dx = (bx - ax) * dir, dz = (bz - az) * dir
+        const len = Math.hypot(dx, dz) || 1
+        const ux = dx / len, uz = dz / len
+        const mx = (ax + bx) * 0.5, mz = (az + bz) * 0.5
+        const sz = Math.max(8, 4.8 * px)
+        ctx.beginPath()
+        ctx.moveTo(mx + ux * sz, mz + uz * sz)
+        ctx.lineTo(mx - ux * sz * 0.6 - uz * sz * 0.65, mz - uz * sz * 0.6 + ux * sz * 0.65)
+        ctx.lineTo(mx - ux * sz * 0.6 + uz * sz * 0.65, mz - uz * sz * 0.6 - ux * sz * 0.65)
+        ctx.closePath()
+        ctx.fillStyle = '#1b6dc1'
+        ctx.fill()
+        ctx.lineWidth = Math.max(1.2, 0.8 * px)
+        ctx.strokeStyle = '#ffffff'
+        ctx.stroke()
+      }
+    }
+  }
+
+  // 2. Active Level Crossings (踏切: disappear after grade separation year!)
+  if (o.levelCrossings?.length && px < 28) {
+    const r = Math.max(10, 4.5 * px)
+    for (const c of o.levelCrossings) {
+      if ((c.openedYear ?? 9999) > curYear) continue
+      if (c.eliminatedYear > 0 && curYear >= c.eliminatedYear) continue
+      ctx.beginPath()
+      ctx.arc(c.x, c.z, r, 0, Math.PI * 2)
+      ctx.fillStyle = '#ffd43b'
+      ctx.fill()
+      ctx.lineWidth = Math.max(1.5, 1.0 * px)
+      ctx.strokeStyle = '#1d1e20'
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.moveTo(c.x - r * 0.55, c.z - r * 0.55)
+      ctx.lineTo(c.x + r * 0.55, c.z + r * 0.55)
+      ctx.moveTo(c.x + r * 0.55, c.z - r * 0.55)
+      ctx.lineTo(c.x - r * 0.55, c.z + r * 0.55)
+      ctx.stroke()
+    }
+  }
+
+  // 3. Signalized Intersections, Stop Signs & Roundabouts
+  if (o.intersections?.length && px < 26) {
+    for (const inter of o.intersections) {
+      if ((inter.openedYear ?? 0) > curYear) continue
+      const hasSig = inter.signalYear > 0 && curYear >= inter.signalYear
+      const hasPedSep = inter.pedSepYear > 0 && curYear >= inter.pedSepYear
+      const hasRb = inter.roundaboutYear > 0 && curYear >= inter.roundaboutYear
+      const hasStop = inter.stopYear > 0 && curYear >= inter.stopYear
+      if (hasRb) {
+        const r = Math.max(9, 4.2 * px)
+        ctx.beginPath()
+        ctx.arc(inter.x, inter.z, r, 0, Math.PI * 2)
+        ctx.strokeStyle = '#0ea5e9'
+        ctx.lineWidth = Math.max(2.5, 1.8 * px)
+        ctx.stroke()
+      } else if (hasSig) {
+        const r = Math.max(6.5, 2.8 * px)
+        ctx.beginPath()
+        ctx.arc(inter.x, inter.z, r, 0, Math.PI * 2)
+        ctx.fillStyle = hasPedSep ? '#10b981' : '#e63946'
+        ctx.fill()
+        ctx.lineWidth = Math.max(1.2, 0.9 * px)
+        ctx.strokeStyle = '#ffffff'
+        ctx.stroke()
+      } else if (hasStop && px < 6.5) {
+        const r = Math.max(5.5, 2.3 * px)
+        ctx.beginPath()
+        ctx.moveTo(inter.x - r, inter.z - r * 0.65)
+        ctx.lineTo(inter.x + r, inter.z - r * 0.65)
+        ctx.lineTo(inter.x, inter.z + r * 0.95)
+        ctx.closePath()
+        ctx.fillStyle = '#d62828'
+        ctx.fill()
+        ctx.lineWidth = Math.max(1.0, 0.7 * px)
+        ctx.strokeStyle = '#ffffff'
+        ctx.stroke()
+      }
+    }
+  }
+  ctx.restore()
+}
+
+function drawShops(px) {
+  const o = state.overlay
+  const halfW = state.cssW * 0.55 * px
+  const halfH = state.cssH * 0.55 * px
+  const minX = state.view.cx - halfW
+  const maxX = state.view.cx + halfW
+  const minZ = state.view.cz - halfH
+  const maxZ = state.view.cz + halfH
+  const filteredMode = state.shopFilter !== 'all' || Boolean(state.shopCodeFilter)
+
+  for (let i = 0; i < o.shops.length; i++) {
+    const s = o.shops[i]
+    if (s.x < minX || s.x > maxX || s.z < minZ || s.z > maxZ) continue
+    if (!shopMatchesFilter(s)) continue
+    const meta = o.shopCatalog.get(s.typeId)
+    const isLarge = meta?.category === 'large_retail' || s.floorArea >= 1200
+    const isMid = s.floorArea >= 260 || meta?.category === 'modern_retail' || meta?.category === 'medical'
+    if (!filteredMode) {
+      if (px > 24 && !isLarge) continue
+      if (px > 9 && !isLarge && !isMid) continue
+    }
+    const isSel = state.selectedShop && state.selectedShop.id === s.id
+    const r = isLarge ? Math.max(16, 5.2 * px) : isMid ? Math.max(9, 3.3 * px) : Math.max(6, 2.5 * px)
+    ctx.beginPath()
+    if (s.typeId === 44) {
+      // Shuttered vacancy: square gray marker
+      ctx.rect(s.x - r * 0.85, s.z - r * 0.85, r * 1.7, r * 1.7)
+    } else if (isLarge) {
+      // Large commercial facility: diamond
+      ctx.moveTo(s.x, s.z - r * 1.25)
+      ctx.lineTo(s.x + r * 1.25, s.z)
+      ctx.lineTo(s.x, s.z + r * 1.25)
+      ctx.lineTo(s.x - r * 1.25, s.z)
+      ctx.closePath()
+    } else {
+      ctx.arc(s.x, s.z, r, 0, Math.PI * 2)
+    }
+    ctx.fillStyle = meta?.color ?? '#c84b68'
+    ctx.fill()
+    ctx.lineWidth = isSel ? 3.2 * px : Math.max(1.2, 0.9 * px)
+    ctx.strokeStyle = isSel ? '#1d2a33' : '#ffffff'
     ctx.stroke()
   }
 }
@@ -633,7 +940,7 @@ function drawPlatform(line, station) {
   ctx.stroke()
 }
 
-// Drawn in CSS pixels: names, the way to the metropolis.
+// Drawn in CSS pixels: names, the way to the metropolis, large shop names.
 function drawScreen() {
   const o = state.overlay
   const px = state.view.mpp
@@ -665,7 +972,112 @@ function drawScreen() {
   }
 
   if (state.show.rail) drawRailLabels(placed, free)
+  if (state.show.slopes && o?.slopes?.length) drawSlopeOverlays(placed, free, px)
+  if (state.show.urbanNodes && o?.urbanNodes?.length) drawUrbanNodes(placed, free, px)
   if (state.show.districts) drawDistrictLabels(placed, free)
+  if (state.show.shops && o.shops?.length) drawShopLabels(placed, free)
+}
+
+function drawSlopeOverlays(placed, free, px) {
+  const slopes = state.overlay?.slopes
+  if (!slopes?.length || px > 18) return
+  ctx.save()
+  ctx.font = `600 10px ${FONT}`
+  ctx.textBaseline = 'middle'
+  for (let i = 0; i < slopes.length; i++) {
+    const s = slopes[i]
+    const a = toScreen(s.topX, s.topZ)
+    const b = toScreen(s.bottomX, s.bottomZ)
+    ctx.strokeStyle = s.isStair ? 'rgba(180,72,32,0.85)' : 'rgba(198,128,24,0.75)'
+    ctx.lineWidth = Math.max(1.8, 3.0 / Math.max(0.4, px * 0.25))
+    ctx.beginPath()
+    ctx.moveTo(a.x, a.y)
+    ctx.lineTo(b.x, b.y)
+    ctx.stroke()
+    if (px <= 10) {
+      const label = `${s.name} ${s.avgGradePct}%${s.isStair ? ' 階' : ''}`
+      const p = toScreen(s.x, s.z)
+      const w = ctx.measureText(label).width + 10
+      const rect = { x: p.x - w / 2, y: p.y - 16, w, h: 16 }
+      if (free(rect)) {
+        placed.push(rect)
+        ctx.fillStyle = s.isStair ? 'rgba(120,42,16,0.86)' : 'rgba(130,78,12,0.86)'
+        roundRect(rect.x, rect.y, rect.w, rect.h, 4)
+        ctx.fill()
+        ctx.fillStyle = '#fff9ee'
+        ctx.fillText(label, rect.x + 5, rect.y + 8)
+      }
+    }
+  }
+  ctx.restore()
+}
+
+function drawUrbanNodes(placed, free, px) {
+  const nodes = state.overlay?.urbanNodes
+  if (!nodes?.length) return
+  ctx.save()
+  ctx.font = `700 11px ${FONT}`
+  ctx.textBaseline = 'middle'
+  for (const n of nodes) {
+    if (n.type === 'DEPOT_SITE' && px > 14) continue
+    const p = toScreen(n.x, n.z)
+    const r = n.type === 'CORE_TERMINAL' ? 7 : n.type === 'SUB_HUB' ? 5.5 : 4
+    ctx.beginPath()
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2)
+    ctx.fillStyle = n.type === 'DEPOT_SITE' ? 'rgba(72,96,128,0.72)' : n.expressStop ? 'rgba(214,48,72,0.88)' : 'rgba(42,126,178,0.80)'
+    ctx.fill()
+    ctx.lineWidth = 1.6
+    ctx.strokeStyle = '#ffffff'
+    ctx.stroke()
+    if (px >= 4) {
+      const label = n.expressStop ? `★${n.name}` : n.name
+      const w = ctx.measureText(label).width + 12
+      const rect = { x: p.x - w / 2, y: p.y + 10, w, h: 18 }
+      if (free(rect)) {
+        placed.push(rect)
+        ctx.fillStyle = 'rgba(24,32,48,0.84)'
+        roundRect(rect.x, rect.y, rect.w, rect.h, 5)
+        ctx.fill()
+        ctx.fillStyle = '#ffffff'
+        ctx.fillText(label, rect.x + 6, rect.y + 9)
+      }
+    }
+  }
+  ctx.restore()
+}
+
+function drawShopLabels(placed, free) {
+  const o = state.overlay
+  const px = state.view.mpp
+  if (px > 12 && !state.selectedShop) return
+  ctx.font = `600 11px ${FONT}`
+  const list = []
+  if (state.selectedShop) list.push({ s: state.selectedShop, strong: true })
+  if (px <= 12) {
+    for (let i = 0; i < o.shops.length && list.length < 40; i++) {
+      const s = o.shops[i]
+      if (!shopMatchesFilter(s)) continue
+      const meta = o.shopCatalog.get(s.typeId)
+      const isLarge = meta?.category === 'large_retail' || s.floorArea >= 1400
+      if (px > 2.2 && !isLarge) continue
+      const p = toScreen(s.x, s.z)
+      if (p.x < 10 || p.y < 10 || p.x > state.cssW - 10 || p.y > state.cssH - 10) continue
+      list.push({ s, strong: false })
+    }
+  }
+  for (const { s, strong } of list) {
+    const p = toScreen(s.x, s.z)
+    if (p.x < -80 || p.y < -20 || p.x > state.cssW + 80 || p.y > state.cssH + 20) continue
+    const w = ctx.measureText(s.name).width + 8
+    const rect = { x: p.x + 8, y: p.y - 8, w, h: 16 }
+    if (!strong && !free(rect)) continue
+    placed.push(rect)
+    ctx.lineWidth = 3
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.92)'
+    ctx.strokeText(s.name, rect.x + 3, p.y)
+    ctx.fillStyle = strong ? '#1d2a33' : '#4b3848'
+    ctx.fillText(s.name, rect.x + 3, p.y)
+  }
 }
 
 // Names of the towns (町) from middle distance, of the blocks (丁目) close in.
@@ -695,12 +1107,15 @@ function drawDistrictLabels(placed, free) {
 function drawRailLabels(placed, free) {
   const o = state.overlay
   const px = state.view.mpp
-  // Line names at their far ends when the whole region is in view.
+  const visibleLines = state.isExtremeSim
+    ? o.lines.filter((line) => (line.openedYear ?? 0) <= state.year)
+    : o.lines
   if (px >= 12) {
     ctx.font = `700 12px ${FONT}`
-    for (const line of o.lines) {
+    for (const line of visibleLines) {
       if (state.selected >= 0 && state.selected !== line.id) continue
       const last = line.stations[line.stations.length - 1]
+      if (!last) continue
       const p = toScreen(last.x, last.z)
       const w = ctx.measureText(line.name).width + 14
       const rect = { x: p.x - w / 2, y: p.y + 12, w, h: 20 }
@@ -718,10 +1133,10 @@ function drawRailLabels(placed, free) {
   ctx.font = `600 12px ${FONT}`
   const seen = new Set()
   const stations = []
-  const selected = o.lines.find((line) => line.id === state.selected)
+  const selected = visibleLines.find((line) => line.id === state.selected)
   if (selected) stations.push(...selected.stations.map((station) => ({ station, strong: true })))
-  for (const line of o.lines) for (const station of line.stations) if (station.transfer) stations.push({ station, strong: false })
-  for (const line of o.lines) for (const station of line.stations) stations.push({ station, strong: false })
+  for (const line of visibleLines) for (const station of line.stations) if (station.transfer) stations.push({ station, strong: false })
+  for (const line of visibleLines) for (const station of line.stations) stations.push({ station, strong: false })
   for (const { station, strong } of stations) {
     if (seen.has(station.name)) continue
     if (!(strong || px < 14 || (station.transfer && px < 40))) continue
@@ -772,7 +1187,7 @@ canvas.addEventListener('pointerdown', (event) => {
   try {
     canvas.setPointerCapture(event.pointerId)
   } catch {
-    // A pointer the browser no longer tracks; dragging still works without the capture.
+    // Dragging still works without capture.
   }
   pointers.set(event.pointerId, { x: event.offsetX, y: event.offsetY })
   gesture = { moved: 0, start: { x: event.offsetX, y: event.offsetY }, time: performance.now(), pinch: null }
@@ -818,7 +1233,6 @@ function endPointer(event) {
     canvas.classList.remove('dragging')
     if (gesture && gesture.moved < 6 && performance.now() - gesture.time < 500) {
       clickAt(event.offsetX, event.offsetY)
-      // A finger cannot hover: a tap shows what is under it.
       if (event.pointerType !== 'mouse') askPoint(event.offsetX, event.offsetY)
     }
     gesture = null
@@ -867,10 +1281,39 @@ for (const button of document.querySelectorAll('[data-zoom]')) {
 function clickAt(sx, sy) {
   if (!state.overlay) return
   const { x, z } = toWorld(sx, sy)
-  const reach = 10 * state.view.mpp
+  const px = state.view.mpp
+
+  // 1. Check visible commercial shops first
+  if (state.show.shops && state.overlay.shops?.length) {
+    const reachShop = Math.max(18, 10 * px)
+    let bestShop = null
+    let bestD = reachShop
+    const filteredMode = state.shopFilter !== 'all' || Boolean(state.shopCodeFilter)
+    for (let i = 0; i < state.overlay.shops.length; i++) {
+      const s = state.overlay.shops[i]
+      if (Math.abs(s.x - x) > bestD || Math.abs(s.z - z) > bestD) continue
+      if (!shopMatchesFilter(s)) continue
+      const meta = state.overlay.shopCatalog.get(s.typeId)
+      const isLarge = meta?.category === 'large_retail' || s.floorArea >= 1200
+      const isMid = s.floorArea >= 260 || meta?.category === 'modern_retail' || meta?.category === 'medical'
+      if (!filteredMode && ((px > 24 && !isLarge) || (px > 9 && !isLarge && !isMid))) continue
+      const d = Math.hypot(s.x - x, s.z - z)
+      if (d < bestD) { bestD = d; bestShop = s }
+    }
+    if (bestShop) {
+      selectShop(bestShop)
+      return
+    }
+  }
+
+  // 2. Check railway lines
+  const reach = 10 * px
   let best = null
   let bestDistance = reach
-  for (const line of state.show.rail ? state.overlay.lines : []) {
+  const visibleLines = state.show.rail
+    ? (state.isExtremeSim ? state.overlay.lines.filter((l) => (l.openedYear ?? 0) <= state.year) : state.overlay.lines)
+    : []
+  for (const line of visibleLines) {
     const points = line.points
     for (let k = 0; k < points.length; k += 2) {
       const d = Math.hypot(points[k] - x, points[k + 1] - z)
@@ -882,6 +1325,40 @@ function clickAt(sx, sy) {
   }
   if (best) selectLine(best.id)
   else if (state.show.districts) selectDistrict(districtAt(x, z))
+}
+
+function selectShop(shop) {
+  state.selectedShop = shop
+  renderShopDetail()
+  requestDraw()
+}
+
+function renderShopDetail() {
+  const box = $('#shop-detail')
+  if (!box) return
+  const s = state.selectedShop
+  if (!s) {
+    box.hidden = true
+    return
+  }
+  const meta = state.overlay?.shopCatalog?.get(s.typeId)
+  const prevMeta = s.convertedFrom >= 0 ? state.overlay?.shopCatalog?.get(s.convertedFrom) : null
+  const isVacant = s.typeId === 44
+  box.hidden = false
+  box.innerHTML = `<div class="detail-head">
+      <h2>${escape(s.name)}</h2>
+      <button type="button" id="shop-close">閉じる</button>
+    </div>
+    <div class="shop-card" style="margin-top:8px">
+      <p><span class="tag" style="background:${meta?.color ?? '#666'}">${escape(meta?.name ?? s.code)}</span>
+         <span>${escape(LOC_LABELS[s.locKind] ?? s.locKind)}・延床 約${whole(s.floorArea)}m²</span></p>
+      <p style="margin-top:6px">
+        ${isVacant
+          ? `<b>空き店舗化（${s.closedYear}年〜）</b><br>旧業種：${escape(prevMeta?.name ?? '不明')}（${s.openedYear}年開業）<br>閉店要因：<b>${escape(s.closeReason || '採算悪化・後継者不足')}</b>`
+          : `開業：<b>${s.openedYear}年</b>${s.closedYear ? ` → 閉店：<b>${s.closedYear}年</b>（${escape(s.closeReason || '撤退')}）` : '（2025年現在 営業中）'}${prevMeta ? `<br>居抜き転換元：${escape(prevMeta.name)}` : ''}`}
+      </p>
+    </div>`
+  $('#shop-close', box).addEventListener('click', () => selectShop(null))
 }
 
 function askPoint(sx, sy) {
@@ -905,16 +1382,356 @@ function showReadout(info) {
   }
   const water = info.water === 1 ? '川の水面' : info.water === 2 ? '小川' : ''
   const use = USE_STYLE[info.use]?.name ?? ''
-  const era = info.era ? `${ERA_LABELS[info.era]}${info.era === 1 ? 'から' : 'に'}市街化` : '市街化していない'
+  const era = info.builtYear
+    ? `${info.builtYear}年市街化${info.rebuiltYear && info.rebuiltYear > info.builtYear ? `（${info.rebuiltYear}年更新）` : ''}`
+    : (info.era ? `${ERA_LABELS[info.era] ?? ''}市街化` : '未市街地')
   box.hidden = false
   const priceText = info.landPrice > 0 ? `・地価 <b>${info.landPrice.toFixed(1)}万円/m²</b>（坪${whole(info.landPrice * 3.30578)}万円）` : ''
+  const geoLine = info.geology
+    ? `地質 <b>${escape(info.geology)}</b>${info.bearingN !== null ? `（N値 ${info.bearingN}）` : ''}${info.floodDepth > 0.05 ? `・想定浸水 <b>${info.floodDepth.toFixed(1)}m</b>` : '・浸水リスク低'}`
+    : `${LAND_NAMES[info.land]}`
+  const zoneLine = info.zoning ? `用途地域 <b>${escape(info.zoning)}</b>・` : ''
+  const agingText = info.aging !== null ? `・高齢化率 ${(info.aging * 100).toFixed(1)}%` : ''
+  const shopLine = info.nearestShop
+    ? `近隣店舗 <b>${escape(info.nearestShop.name)}</b>（${info.nearestShop.openedYear}年〜${info.nearestShop.closedYear ? `${info.nearestShop.closedYear}年閉店` : '営業中'}）`
+    : ''
+  const slopeLine = info.nearestSlope
+    ? `坂道 <b>${escape(info.nearestSlope.name)}</b>（平均${info.nearestSlope.avgGradePct}%・高低差${info.nearestSlope.riseM}m${info.nearestSlope.isStair ? '・階段' : ''}）`
+    : ''
+  let roadLine = ''
+  if (info.nearestRoad) {
+    const r = info.nearestRoad
+    const regTags = []
+    if (r.legalSpeedKmh) regTags.push(`規制${r.legalSpeedKmh}km/h`)
+    if (r.oneWay && (!r.oneWayYear || state.year >= r.oneWayYear)) regTags.push('一方通行')
+    if (r.zone30Year > 0 && state.year >= r.zone30Year) regTags.push('ゾーン30')
+    if (r.centerlineType === 'median') regTags.push('中央分離帯')
+    else if (r.centerlineType === 'yellow_solid') regTags.push('黄実線')
+    roadLine = `道路法 <b>${escape(r.legalName)}</b>（幅${r.width.toFixed(1)}m・最急${r.maxGradePct}%${regTags.length ? `・${regTags.join(' / ')}` : ''}）`
+  }
+  const p = info.clickedParcel
+  const parcelTags = []
+  if (p) {
+    if (p.retainingH >= 1.1) parcelTags.push(`擁壁 ${p.retainingH.toFixed(1)}m`)
+    if (p.designFlags & 0x04) parcelTags.push('掘り込み車庫')
+    if (p.designFlags & 0x10) parcelTags.push('旗竿地')
+    if (p.designFlags & 0x02) parcelTags.push('2項セットバック済')
+    if (p.designFlags & 0x01) parcelTags.push('2項既存不適格')
+    if (p.designFlags & 0x40) parcelTags.push('角地緩和')
+  }
+  const parcelLine = parcelTags.length ? `画地設計: <b>${parcelTags.join(' / ')}</b>` : ''
   box.innerHTML = [
     `<b>東へ ${(info.x / 1000).toFixed(2)}km・南へ ${(info.z / 1000).toFixed(2)}km</b>`,
     `標高 <b>${info.height.toFixed(1)}m</b>（整備前 ${info.natural.toFixed(1)}m）・勾配 ${(info.slope * 100).toFixed(1)}%`,
-    `${LAND_NAMES[info.land]}・${water || use}${info.newtown ? '（ニュータウン）' : ''}${priceText}`,
-    `${era}・人口密度 ${whole(info.density)}人/km²`,
-    Number.isFinite(info.minutes) ? `都心まで道路で約${Math.round(info.minutes)}分` : '',
+    geoLine,
+    `${zoneLine}${water || use}${info.newtown ? '（ニュータウン）' : ''}${priceText}`,
+    slopeLine,
+    roadLine,
+    parcelLine,
+    `${era}・人口密度 ${whole(info.density)}人/km²${agingText}`,
+    Number.isFinite(info.minutes) && info.minutes > 0 ? `都心まで約${Math.round(info.minutes)}分` : '',
+    shopLine,
   ].filter(Boolean).join('<br>')
+}
+
+// ---- Timeline (1700 - 2025) ----
+function stopPlayback() {
+  state.playing = false
+  clearInterval(state.playTimer)
+  state.playTimer = 0
+  const btn = $('#timeline-play')
+  if (btn) btn.textContent = '▶ 再生'
+}
+
+function setYearByIndex(idx) {
+  const years = state.overlay?.years ?? [2025]
+  const clamped = Math.max(0, Math.min(years.length - 1, idx))
+  state.year = years[clamped]
+  updateTimelineDisplay()
+  renderCommerce()
+  requestDraw()
+}
+
+function renderTimeline() {
+  const bar = $('#timeline-bar')
+  if (!bar) return
+  const years = state.overlay?.years
+  if (!state.isExtremeSim || !years || years.length < 2) {
+    bar.hidden = true
+    return
+  }
+  bar.hidden = false
+  const slider = $('#timeline-slider')
+  slider.min = '0'
+  slider.max = String(years.length - 1)
+  slider.value = String(Math.max(0, years.indexOf(state.year)))
+  updateTimelineDisplay()
+}
+
+function updateTimelineDisplay() {
+  const years = state.overlay?.years ?? [2025]
+  const idx = Math.max(0, years.indexOf(state.year))
+  const slider = $('#timeline-slider')
+  if (slider) slider.value = String(idx)
+  const yearEl = $('#timeline-year')
+  if (yearEl) yearEl.textContent = `${state.year}年`
+
+  const tl = state.overlay?.timeline
+  const entry = tl?.[idx] ?? tl?.find((t) => t.year === state.year)
+  const kpiEl = $('#timeline-kpi')
+  const evEl = $('#timeline-event')
+  if (entry) {
+    if (kpiEl) {
+      kpiEl.textContent = `人口 ${persons(entry.residents)}・市街化 ${percent(entry.builtShare)}・店舗 ${whole(entry.commerce?.activeTotal ?? 0)}・地価 ${entry.meanLandPrice.toFixed(0)}万`
+    }
+    if (evEl) {
+      const tlInfo = entry.trafficLaw
+        ? ` ／ 道交法期: <b>${escape(entry.trafficLaw.eraName)}</b>（${escape(entry.trafficLaw.leftHandRule)}・信号 ${entry.trafficLaw.signalCount}・一通 ${entry.trafficLaw.oneWayLinks}・Z30 ${entry.trafficLaw.zone30Km}km・踏切 ${entry.trafficLaw.activeCrossings}［連立除却${entry.trafficLaw.eliminatedCrossings}］・危険度 ${entry.trafficLaw.safetyRiskIndex}）`
+        : ''
+      if (entry.events?.length) {
+        evEl.innerHTML = entry.events.map((e) => `<b>【${e.year ?? state.year}年】${escape(e.title)}</b>：${escape(e.summary)}`).join(' / ') + tlInfo
+      } else {
+        evEl.innerHTML = `高齢化率 <b>${(entry.agingRate * 100).toFixed(1)}%</b>・世帯人員 ${entry.householdSize}人・EC率 ${(entry.ecRate * 100).toFixed(1)}%・鉄道 ${entry.railLines}路線 ${entry.railStations}駅` + tlInfo
+      }
+    }
+  }
+}
+
+// ---- Commercial Analytics & Historical Demand Panel ----
+function renderCommerce() {
+  const box = $('#commerce')
+  if (!box) return
+  if (!state.isExtremeSim || !state.overlay?.timeline?.length) {
+    box.hidden = true
+    return
+  }
+  const tl = state.overlay.timeline
+  const cur = tl.find((t) => t.year === state.year) ?? tl[tl.length - 1]
+  const com = cur.commerce
+  const cs = state.summary.commerceSummary
+  const catalogByCode = new Map((state.overlay.catalogs?.shops ?? []).map((s) => [s.code, s]))
+
+  // Top active formats for selected year
+  const topFormats = Object.entries(com?.byCode ?? {})
+    .filter(([code, cnt]) => code !== 'vacant_shutter' && cnt > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 12)
+
+  // Closure reasons at selected year (or cumulative across all years if 2025)
+  const reasons = {}
+  for (const t of tl) {
+    if (t.year > state.year) break
+    for (const [k, v] of Object.entries(t.commerce?.closeReasons ?? {})) {
+      reasons[k] = (reasons[k] ?? 0) + v
+    }
+  }
+  const topReasons = Object.entries(reasons).sort((a, b) => b[1] - a[1]).slice(0, 6)
+
+  const gs = state.summary.gradeSeparations ?? []
+  const inv = state.summary.roadInvestments ?? []
+
+  box.hidden = false
+  box.innerHTML = `<h2>商業施設・商店の盛衰（${state.year}年）</h2>
+    <div class="shop-filters" id="shop-filters">
+      ${SHOP_FILTERS.map((f) => `<button type="button" data-filter="${f.id}" class="${state.shopFilter === f.id && !state.shopCodeFilter ? 'active' : ''}">${f.label}</button>`).join('')}
+      ${state.shopCodeFilter ? `<button type="button" data-clear-code="1" class="active">業種絞込解除 ✕</button>` : ''}
+    </div>
+    <dl class="stats">
+      ${stat('営業中店舗', `${whole(com?.activeTotal ?? 0)}店`, `累計開業 ${whole(cs?.totalHistoricalShops ?? 0)}店`)}
+      ${stat('空き店舗（シャッター）', `${whole(com?.vacantShutter ?? 0)}店`, `空き率 ${((com?.vacancyRate ?? 0) * 100).toFixed(1)}%`)}
+      ${stat('今期の開業 / 閉店', `+${whole(com?.opened ?? 0)} / -${whole(com?.closed ?? 0)}`, `居抜き転換 ${whole(com?.converted ?? 0)}件`)}
+      ${stat('高齢化・EC環境', `${(cur.agingRate * 100).toFixed(1)}%`, `EC率 ${(cur.ecRate * 100).toFixed(1)}%・1世帯${cur.householdSize}人`)}
+    </dl>
+    <h3>1700〜2025年 主要業態の推移</h3>
+    <canvas class="commerce-chart" id="commerce-chart"></canvas>
+    <div class="chart-legend">
+      <span><i style="background:#63a84a"></i>八百屋・魚屋・肉屋</span>
+      <span><i style="background:#eb7d34"></i>食品スーパー</span>
+      <span><i style="background:#25a87a"></i>コンビニ</span>
+      <span><i style="background:#2694d6"></i>ドラッグストア</span>
+      <span><i style="background:#c94b3b"></i>居酒屋</span>
+      <span><i style="background:#6bb86e"></i>介護デイ</span>
+      <span><i style="background:#e0c038"></i>無人販売</span>
+      <span><i style="background:#7a828a"></i>空き店舗</span>
+    </div>
+    <h3>${state.year}年の主な業種（クリックで地図を絞込）</h3>
+    <table class="station-table">
+      <thead><tr><th>業種</th><th>店舗数</th></tr></thead>
+      <tbody>${topFormats.map(([code, cnt]) => {
+        const meta = catalogByCode.get(code)
+        const activeRow = state.shopCodeFilter === code ? ' style="background:var(--accent-soft)"' : ''
+        return `<tr data-shop-code="${escape(code)}"${activeRow}><td><span class="chip" style="background:${meta?.color ?? '#888'}"></span>${escape(meta?.name ?? code)}</td><td>${whole(cnt)}店</td></tr>`
+      }).join('')}</tbody>
+    </table>
+    ${topReasons.length ? `<h3>累計閉店・撤退の主な原因（〜${state.year}年）</h3>
+      <ul class="event-list">${topReasons.map(([r, cnt]) => `<li>${escape(r)}：<b>${whole(cnt)}店</b></li>`).join('')}</ul>` : ''}
+    ${(gs.length || inv.length) ? `<h3>インフラの自律進化ログ</h3>
+      <ul class="event-list">
+        ${gs.map((g) => `<li><b>${g.year}年</b> ${escape(g.lineName)}：連続立体交差${g.quadTrack ? '・複々線化' : ''}（${g.elevatedCells}区間）</li>`).join('')}
+        ${inv.length ? `<li>道路BPR混雑投資（1955〜2025）：拡幅・バイパス・橋梁 <b>計${inv.length}事業</b></li>` : ''}
+      </ul>` : ''}`
+
+  for (const btn of box.querySelectorAll('[data-filter]')) {
+    btn.addEventListener('click', () => {
+      state.shopFilter = btn.dataset.filter
+      state.shopCodeFilter = ''
+      renderCommerce()
+      requestDraw()
+    })
+  }
+  const clearBtn = $('[data-clear-code]', box)
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      state.shopCodeFilter = ''
+      renderCommerce()
+      requestDraw()
+    })
+  }
+  for (const row of box.querySelectorAll('tr[data-shop-code]')) {
+    row.addEventListener('click', () => {
+      const code = row.dataset.shopCode
+      state.shopCodeFilter = state.shopCodeFilter === code ? '' : code
+      renderCommerce()
+      requestDraw()
+    })
+  }
+  drawCommerceChart(tl)
+}
+
+function drawCommerceChart(tl) {
+  const el = $('#commerce-chart')
+  if (!el || !tl.length) return
+  const dpr = state.dpr
+  const w = el.clientWidth || 350
+  const h = el.clientHeight || 155
+  el.width = Math.round(w * dpr)
+  el.height = Math.round(h * dpr)
+  const c = el.getContext('2d')
+  c.setTransform(dpr, 0, 0, dpr, 0, 0)
+  c.clearRect(0, 0, w, h)
+
+  const pad = { left: 34, right: 8, top: 10, bottom: 20 }
+  const plotW = w - pad.left - pad.right
+  const plotH = h - pad.top - pad.bottom
+
+  const series = [
+    { color: '#63a84a', fn: (b) => (b.greengrocer ?? 0) + (b.fishmonger ?? 0) + (b.butcher ?? 0) },
+    { color: '#eb7d34', fn: (b) => (b.supermarket ?? 0) * 4 },
+    { color: '#25a87a', fn: (b) => b.convenience ?? 0 },
+    { color: '#2694d6', fn: (b) => b.drugstore ?? 0 },
+    { color: '#c94b3b', fn: (b) => b.izakaya ?? 0 },
+    { color: '#6bb86e', fn: (b) => b.nursing_care ?? 0 },
+    { color: '#e0c038', fn: (b) => b.unmanned_shop ?? 0 },
+    { color: '#7a828a', fn: (b) => b.vacant_shutter ?? 0 },
+  ]
+
+  // Focus chart on 1900..2025 (or all steps indexed cleanly so modern era is clearly legible)
+  const startIdx = Math.max(0, tl.findIndex((t) => t.year >= 1907))
+  const slice = tl.slice(startIdx)
+  let maxVal = 50
+  for (const t of slice) {
+    const b = t.commerce?.byCode ?? {}
+    for (const s of series) maxVal = Math.max(maxVal, s.fn(b))
+  }
+  maxVal = Math.ceil(maxVal / 100) * 100
+
+  const X = (i) => pad.left + (i / Math.max(1, slice.length - 1)) * plotW
+  const Y = (val) => pad.top + (1 - val / maxVal) * plotH
+
+  // Grid
+  c.font = `500 9.5px ${FONT}`
+  c.strokeStyle = 'rgba(29, 42, 51, 0.08)'
+  c.fillStyle = '#7b8992'
+  c.textBaseline = 'middle'
+  for (let k = 0; k <= 3; k++) {
+    const val = Math.round((maxVal * k) / 3)
+    const y = Y(val)
+    c.beginPath()
+    c.moveTo(pad.left, y)
+    c.lineTo(w - pad.right, y)
+    c.stroke()
+    c.textAlign = 'right'
+    c.fillText(String(val), pad.left - 4, y)
+  }
+  c.textAlign = 'center'
+  for (const yr of [1923, 1955, 1974, 1991, 2008, 2025]) {
+    const idx = slice.findIndex((t) => t.year >= yr)
+    if (idx >= 0) c.fillText(String(slice[idx].year), X(idx), h - 8)
+  }
+
+  // Lines
+  c.lineWidth = 1.8
+  for (const s of series) {
+    c.beginPath()
+    c.strokeStyle = s.color
+    for (let i = 0; i < slice.length; i++) {
+      const val = s.fn(slice[i].commerce?.byCode ?? {})
+      if (i === 0) c.moveTo(X(i), Y(val))
+      else c.lineTo(X(i), Y(val))
+    }
+    c.stroke()
+  }
+
+  // Current year indicator
+  const curIdx = slice.findIndex((t) => t.year === state.year)
+  if (curIdx >= 0) {
+    const cx = X(curIdx)
+    c.strokeStyle = 'rgba(20, 89, 77, 0.7)'
+    c.lineWidth = 1.5
+    c.setLineDash([3, 2])
+    c.beginPath()
+    c.moveTo(cx, pad.top)
+    c.lineTo(cx, h - pad.bottom)
+    c.stroke()
+    c.setLineDash([])
+  }
+}
+
+// ---- Server CLI Generation Trigger ----
+async function triggerCliGenerate(mode) {
+  const seed = regionSeed($('#seed').value)
+  const deepBtn = $('#run-cli-deep')
+  const fastBtn = $('#run-cli-fast')
+  if (deepBtn) deepBtn.disabled = true
+  if (fastBtn) fastBtn.disabled = true
+  clearInterval(state.cliPollTimer)
+
+  try {
+    showProgress(mode === 'deep' ? '5m超極限CLI起動中' : '20m高速CLI起動中', 0.02, 0)
+    const res = await fetch('/api/sim/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ seed, mode }),
+    })
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `HTTP ${res.status}`)
+    const started = performance.now()
+
+    state.cliPollTimer = setInterval(async () => {
+      try {
+        const sr = await fetch(`/api/sim/status/${seed}`, { cache: 'no-cache' })
+        if (!sr.ok) return
+        const data = await sr.json()
+        const job = data.job
+        if (job?.status === 'running') {
+          showProgress(`CLI(${job.mode === 'deep' ? '5m' : '20m'}): ${job.label}`, job.fraction, performance.now() - started)
+        } else if (job?.status === 'done' || (!job && data.ready)) {
+          clearInterval(state.cliPollTimer)
+          if (deepBtn) deepBtn.disabled = false
+          if (fastBtn) fastBtn.disabled = false
+          generate(String(seed))
+        } else if (job?.status === 'failed') {
+          clearInterval(state.cliPollTimer)
+          if (deepBtn) deepBtn.disabled = false
+          if (fastBtn) fastBtn.disabled = false
+          showStatus(`CLI生成に失敗しました：\n${job.error}`, true)
+        }
+      } catch { /* retry next poll */ }
+    }, 1200)
+  } catch (err) {
+    if (deepBtn) deepBtn.disabled = false
+    if (fastBtn) fastBtn.disabled = false
+    showStatus(`CLI生成APIを呼び出せませんでした（ローカルサーバー起動を確認してください）：\n${err.message}`, true)
+  }
 }
 
 // ---- The panel ----
@@ -941,16 +1758,28 @@ function renderLegend() {
   const layer = state.layer
   if (layer === 'relief' || layer === 'natural') {
     box.innerHTML = `<div class="ramp" style="background:${gradient(HEIGHT_STOPS)}"></div><div class="ticks"><span>0m</span><span>25m</span><span>55m</span><span>90m</span></div>
-      <p class="note">${layer === 'natural' ? '人が手を入れる前の地形。台地を刻む谷、崖線、大きな川の低地、対岸の丘陵。' : '造成・盛土・堤防の後の地面。拡大すると1m単位の地面（ひな壇、田の段、堤防、川の断面）になります。'}</p>`
+      <p class="note">${layer === 'natural' ? '人が手を入れる前の自然地形。上位丘陵・高位/中位/下位の4段段丘、段丘崖線、多数の開析谷、蛇行河川と旧河道。' : '造成・盛土・堤防・ニュータウンひな壇の後。拡大すると2m/1m微地形と坂道・一軒ごとの建物になります。'}</p>`
+  } else if (layer === 'geology') {
+    box.innerHTML = `<div class="swatches">${GEOLOGY_STYLE.map((s) => `<span><i style="background:${s.color}"></i>${s.name}</span>`).join('')}</div>
+      <p class="note">火山灰ローム層厚・支持地盤N値・地下水湧出を決める地質区分。旧河道・低地は軟弱地盤で地価・防災に影響します。</p>`
+  } else if (layer === 'hazard') {
+    box.innerHTML = `<div class="ramp" style="background:${gradient(HAZARD_STOPS)}"></div><div class="ticks"><span>0m</span><span>0.8m</span><span>1.5m</span><span>2.5m</span><span>4.0m+</span></div>
+      <p class="note">計画規模降雨時の想定浸水深（m）。旧河道・後背湿地・低地谷底に浸水リスクが集中します。</p>`
+  } else if (layer === 'zoning') {
+    box.innerHTML = `<div class="swatches">${ZONING_STYLE.map((s) => `<span><i style="background:${s.color}"></i>${s.name}</span>`).join('')}</div>
+      <p class="note">1968年新都市計画法以降の法定用途地域。建ぺい率・容積率・大型商業施設立地を制御します。</p>`
+  } else if (layer === 'aging') {
+    box.innerHTML = `<div class="ramp" style="background:${gradient(AGING_STOPS)}"></div><div class="ticks"><span>14%</span><span>22%</span><span>27%</span><span>32%</span><span>38%</span><span>45%</span></div>
+      <p class="note">2025年時点の地域別65歳以上高齢化率。高度成長期ニュータウン・旧市街で高く、駅前再開発マンション群で低い構造を再現。</p>`
   } else if (layer === 'price') {
     box.innerHTML = `<div class="ramp" style="background:${gradient(PRICE_STOPS)}"></div><div class="ticks"><span>0</span><span>25</span><span>70</span><span>140</span><span>260万円/m²</span></div>
-      <p class="note">公示地価ベースの土地価格シミュレーション（万円/m²）。都心への所要時間、最寄り駅との距離・乗降客数、幹線道路・商業核、台地と低地の水害リスク・傾斜から算出しています。</p>`
+      <p class="note">公示地価ベースの土地価格（万円/m²）。タイムラインを動かすと1991年バブル絶頂〜崩壊〜2025年再上昇を追えます。</p>`
   } else if (layer === 'people') {
     box.innerHTML = `<div class="ramp" style="background:${gradient(PEOPLE_STOPS)}"></div><div class="ticks"><span>0</span><span>1万</span><span>2万</span><span>3万</span><span>4.5万人/km²</span></div>
-      <p class="note">建物の床面積から計算した夜間人口。遠目では100mメッシュの平均です。</p>`
+      <p class="note">建物の床面積から計算した夜間人口密度。タイムラインで1700年から2025年までの市街化拡大を再生できます。</p>`
   } else if (layer === 'cost') {
     box.innerHTML = `<div class="ramp" style="background:${gradient(COST_STOPS)}"></div><div class="ticks"><span>20</span><span>150</span><span>340</span><span>650億円/km</span></div>
-      <p class="note">鉄道を通すときの1kmあたりの建設費の目安（用地・立ち退き・高低差・川を含む）。路線はこの費用と、拾える利用者の多さを比べて探索しています。</p>`
+      <p class="note">鉄道の1kmあたり建設費（用地・立ち退き・地盤・高低差・河川横断を含む）。</p>`
   } else if (layer === 'use') {
     box.innerHTML = `<div class="swatches">${Object.values(USE_STYLE).map((style) => `<span><i style="background:${style.color}"></i>${style.name}</span>`).join('')}</div>`
   } else if (layer === 'era') {
@@ -969,19 +1798,19 @@ function renderSummary() {
   box.hidden = false
   box.innerHTML = `<h2>地域の概要 <span class="note">シード ${escape(s.seed)}・計算 ${(s.timings.total / 1000).toFixed(1)}秒</span></h2>
     <dl class="stats">
-      ${stat('人口', `${persons(s.people.residents)}人`, `平均 ${whole(s.people.density.mean)}人/km²`)}
+      ${stat('2025年 人口', `${persons(s.people.residents)}人`, `平均 ${whole(s.people.density.mean)}人/km²`)}
       ${stat('世帯・従業者', `${persons(s.people.households)}世帯`, `従業者 ${persons(s.people.jobs)}人`)}
       ${stat('市街化した土地', percent(s.city.builtShare), `ニュータウン ${(s.city.newtownArea / 1e6).toFixed(1)}km²`)}
       ${s.city.landPrice ? stat('平均地価', `${s.city.landPrice.mean.toFixed(1)}万円/m²`, `住宅 ${s.city.landPrice.residentialMean.toFixed(1)}・商業 ${s.city.landPrice.commercialMean.toFixed(1)}・最高 ${whole(s.city.landPrice.max)}万円/m²`) : ''}
+      ${s.totalBuildings ? stat('生成建物総数', `${persons(s.totalBuildings)}棟`, s.has5mTerrain ? '5m超高精細地形＋100タイル' : '20m地形＋100パーセルタイル') : ''}
       ${stat('標高', `${s.terrain.lowest.toFixed(0)}〜${s.terrain.highest.toFixed(0)}m`, `台地 ${percent(s.terrain.plateau)}・低地 ${percent(s.terrain.lowland)}・丘陵 ${percent(s.terrain.hills)}`)}
-      ${stat('幹線道路', km(roads[2] + roads[3] + roads[4], 0), `国道級 ${km(roads[4], 0)}・都道級 ${km(roads[3], 0)}`)}
+      ${stat('幹線道路', km((roads[2] ?? 0) + (roads[3] ?? 0) + (roads[4] ?? 0), 0), `国道級 ${km(roads[4] ?? 0, 0)}・都道級 ${km(roads[3] ?? 0, 0)}`)}
+      ${stat('鉄道', `${s.rail.lines.length}路線・${km(s.rail.length, 0)}`, `${s.rail.stations}駅・利用 ${persons(s.rail.railTrips)}人/日`)}
+      ${stat('鉄道総事業費', oku(s.rail.cost), `費用便益比 ${s.rail.ratio.toFixed(2)}`)}
       ${stat('1日の移動', `${persons(s.demand.trips)}回`, `うち都心へ ${persons(s.demand.toMetropolis)}回`)}
-      ${stat('鉄道', `${s.rail.lines.length}路線・${km(s.rail.length, 0)}`, `${s.rail.stations}駅`)}
-      ${stat('鉄道の利用', `${persons(s.rail.railTrips)}人/日`)}
-      ${stat('総事業費', oku(s.rail.cost))}
-      ${stat('費用便益比', s.rail.ratio.toFixed(2), '50年間の便益÷事業費')}
+      ${state.overlay?.trafficLawStats ? stat('道路交通法(2025)', `信号${state.overlay.trafficLawStats.signalCount} / 踏切${state.overlay.trafficLawStats.activeCrossings}`, `一通${state.overlay.trafficLawStats.oneWayLinks}・Z30 ${state.overlay.trafficLawStats.zone30Km}km・連立除却${state.overlay.trafficLawStats.eliminatedCrossings}`) : ''}
     </dl>
-    <p class="note" style="margin-top:8px">集落 ${s.city.villages}・学校 ${s.city.schools}・大きな公園 ${s.city.parks}・暗渠化した小川 ${s.city.culverts}本。造成の土量は切土 ${persons(s.city.earthwork.cut)}m³・盛土 ${persons(s.city.earthwork.fill)}m³。</p>`
+    <p class="note" style="margin-top:8px">集落 ${s.city.villages}${s.springs ? `・段丘崖線湧水 ${s.springs}点` : ''}・学校 ${s.city.schools}・大公園 ${s.city.parks}・暗渠化した小川 ${s.city.culverts}本。${s.city.earthwork?.cut ? `造成土量 切土 ${persons(s.city.earthwork.cut)}m³・盛土 ${persons(s.city.earthwork.fill)}m³。` : ''}</p>`
 }
 
 function renderEras() {
@@ -990,9 +1819,9 @@ function renderEras() {
   box.hidden = false
   box.innerHTML = `<h2>市街化の進み方</h2><div class="eras">${list.map((entry, index) => `
     <span>${entry.year === 1700 ? '江戸期' : entry.year + '年'}</span>
-    <span class="track"><span style="width:${(entry.share * 100).toFixed(1)}%;background:${ERA_COLORS[index + 1]}"></span></span>
+    <span class="track"><span style="width:${(entry.share * 100).toFixed(1)}%;background:${ERA_COLORS[Math.min(ERA_COLORS.length - 1, index + 1)]}"></span></span>
     <span>${percent(entry.share)}</span>`).join('')}</div>
-    <p class="note" style="margin-top:6px">「市街化の年代」で色分けすると、都心側（東）から広がった様子が見えます。</p>`
+    <p class="note" style="margin-top:6px">「市街化の年代」で色分けすると、江戸街道・宿場から鉄道沿線、高度成長期ニュータウンへと広がった過程が見えます。</p>`
 }
 
 function renderLines() {
@@ -1003,15 +1832,21 @@ function renderLines() {
     box.innerHTML = '<h2>鉄道路線</h2><p class="note">費用便益比が1を超える路線が見つかりませんでした。</p>'
     return
   }
+  const byId = new Map(state.overlay.lines.map((l) => [l.id, l]))
   box.innerHTML = `<h2>鉄道路線</h2>
     <table class="line-table">
-      <thead><tr><th>路線</th><th>延長</th><th>駅</th><th>所要</th><th>利用者/日</th><th>事業費</th><th>B/C</th></tr></thead>
-      <tbody>${s.lines.map((line) => `<tr data-line="${line.id}" class="${line.id === state.selected ? 'selected' : ''}">
-        <td><span class="chip" style="background:${line.color}"></span>${escape(line.name)}</td>
-        <td>${km(line.length)}</td><td>${line.stations}</td><td>${Math.round(line.runMinutes)}分</td>
-        <td>${persons(line.riders)}</td><td>${oku(line.cost)}</td><td>${line.ratio.toFixed(2)}</td></tr>`).join('')}</tbody>
+      <thead><tr><th>路線</th><th>開業</th><th>延長</th><th>駅</th><th>利用者/日</th><th>事業費</th><th>B/C</th></tr></thead>
+      <tbody>${s.lines.map((line) => {
+        const full = byId.get(line.id)
+        const yr = full?.openedYear ? `${full.openedYear}` : '-'
+        const tag = full?.quadTrack ? ' 複々' : full?.gradeSeparatedYear ? ' 連立' : ''
+        return `<tr data-line="${line.id}" class="${line.id === state.selected ? 'selected' : ''}">
+          <td><span class="chip" style="background:${line.color}"></span>${escape(line.name)}${tag ? `<small style="color:var(--accent-ink)">${tag}</small>` : ''}</td>
+          <td>${yr}</td><td>${km(line.length)}</td><td>${line.stations}</td>
+          <td>${persons(line.riders)}</td><td>${oku(line.cost)}</td><td>${line.ratio.toFixed(2)}</td></tr>`
+      }).join('')}</tbody>
     </table>
-    <p class="network">放射線は都心（東）へ直通し、環状線は放射線どうしを南北に結びます。路線は費用便益比の高い順に1本ずつ加え、1を下回ったところで止めています。行をクリックすると縦断面図と工事の内訳を表示します。</p>`
+    <p class="network">1907年の軌道線から始まり、1923〜32年の私鉄放射線、1965〜82年の地下鉄・環状線、1995〜2018年の連続立体交差・複々線化へと段階的に進化しています。行をクリックすると縦断面図を表示します。</p>`
   for (const row of box.querySelectorAll('tr[data-line]')) row.addEventListener('click', () => selectLine(Number(row.dataset.line)))
 }
 
@@ -1042,7 +1877,7 @@ function renderDistrict() {
       ${district.landPrice ? stat('平均地価', `${district.landPrice.toFixed(1)}万円/m²`, `坪あたり約${whole(district.landPrice * 3.30578)}万円`) : ''}
       ${stat('駅', district.stations.length ? district.stations.map(escape).join('・') : 'なし', `隣の丁目 ${district.neighbours.length}`)}
     </dl>
-    <p class="note" style="margin-top:8px">${escape(town.name)}は${town.districts.length}丁目まで（${(town.area / 1e6).toFixed(2)}km²・人口 ${persons(town.residents)}人）。町の境は幹線道路・地上の線路・川・崖、丁目の境は補助的な道路を目安に引いています。</p>
+    <p class="note" style="margin-top:8px">${escape(town.name)}は${town.districts.length}丁目まで（${(town.area / 1e6).toFixed(2)}km²・人口 ${persons(town.residents)}人）。</p>
     <div id="district-actions"></div>`
   $('#district-close', box).addEventListener('click', () => selectDistrict(state.district))
   renderDistrictActions(district)
@@ -1091,19 +1926,26 @@ function renderLineDetail(line) {
   const structures = line.cost.byStructure.map((entry, index) => ({ ...entry, index })).filter((entry) => entry.length > 0)
   const overheadShare = line.cost.total - line.cost.civil
   const busiest = line.loads.indexOf(line.maxLoad)
+  const historyNote = [
+    line.openedYear ? `${line.openedYear}年開業` : '',
+    line.gradeSeparatedYear ? `${line.gradeSeparatedYear}年連続立体交差` : '',
+    line.quadTrack ? '複々線化済' : '',
+  ].filter(Boolean).join('・')
+
   box.innerHTML = `<div class="detail-head"><span class="chip" style="background:${line.color}"></span><h2>${escape(line.name)}</h2><button type="button" id="deselect">選択を解除</button></div>
+    ${historyNote ? `<p class="note" style="margin-top:4px">${escape(historyNote)}</p>` : ''}
     <dl class="stats" style="margin-top:10px">
       ${stat(line.kind === 'radial' ? '放射線（都心直通）' : '環状線', km(line.length), `${line.stations.length}駅・端から端まで${Math.round(line.runMinutes)}分`)}
       ${stat('1日の利用者', `${persons(line.riders)}人`, busiest >= 0 ? `最混雑 ${escape(line.stations[busiest]?.name ?? '')}→${escape(line.stations[busiest + 1]?.name ?? '')} ${persons(line.maxLoad)}人` : '')}
       ${stat('事業費', oku(line.cost.total), `土木 ${oku(line.cost.civil - line.cost.stations)}・駅 ${oku(line.cost.stations)}・設備ほか ${oku(overheadShare)}`)}
-      ${stat('追加したときの費用便益比', line.ratio.toFixed(2), `便益 ${oku(line.benefit)}（50年）`)}
+      ${stat('費用便益比', line.ratio.toFixed(2), `便益 ${oku(line.benefit)}（50年）`)}
       ${stat('立ち退き', `約${whole(line.cost.buildings)}棟`, `用地費 ${oku(line.cost.land)}`)}
       ${stat('最急勾配', `${(line.cost.steepest * 1000).toFixed(1)}‰`, `乗換駅 ${line.transfers}`)}
     </dl>
     <h3>縦断面図（高さは誇張）</h3>
     <div class="profile-wrap"><canvas id="profile"></canvas></div>
     <div class="difficulty" title="200mごとの工事の難しさ">${line.cost.difficulty.map((level) => `<span style="background:${DIFFICULTY_COLORS[level]}" title="${DIFFICULTY_NAMES[level]}"></span>`).join('')}</div>
-    <p class="profile-info" id="profile-info">図の上にカーソルを置くと、その地点の地盤・線路の高さと構造を表示します。下の帯は200mごとの工事の難しさ（緑：やさしい〜赤：非常に難しい）。</p>
+    <p class="profile-info" id="profile-info">図の上にカーソルを置くと、その地点の地盤・線路の高さと構造を表示します。</p>
     <h3>構造ごとの延長と費用</h3>
     <div class="struct-bar">${structures.map((entry) => `<span style="flex:${entry.length / total};background:${STRUCTURE_COLORS[entry.index]}" title="${entry.name}"></span>`).join('')}</div>
     <div class="struct-legend">${structures.map((entry) => `<span><i style="background:${STRUCTURE_COLORS[entry.index]}"></i>${entry.name}</span><span>${km(entry.length, 2)}</span><span>${oku(entry.cost * 1.3)}</span>`).join('')}</div>
@@ -1153,7 +1995,6 @@ function drawProfile(line, cursor = null) {
   c.clearRect(0, 0, g.width, g.height)
   c.font = `500 10px ${FONT}`
   c.textBaseline = 'middle'
-  // Grid.
   c.strokeStyle = 'rgba(29, 42, 51, 0.08)'
   c.fillStyle = '#7b8992'
   c.lineWidth = 1
@@ -1168,7 +2009,6 @@ function drawProfile(line, cursor = null) {
   }
   c.textAlign = 'center'
   for (let s = 0; s <= g.length; s += 2000) c.fillText(`${s / 1000}km`, g.X(s), g.height - 9)
-  // The ground.
   c.beginPath()
   c.moveTo(g.X(0), g.Y(g.low))
   for (let k = 0; k < g.count; k++) c.lineTo(g.X(k * 20), g.Y(line.ground[k]))
@@ -1181,7 +2021,6 @@ function drawProfile(line, cursor = null) {
   c.strokeStyle = '#9b8358'
   c.lineWidth = 1
   c.stroke()
-  // The track, coloured by structure.
   c.lineWidth = 2.4
   c.lineCap = 'butt'
   let k = 0
@@ -1198,7 +2037,6 @@ function drawProfile(line, cursor = null) {
     c.stroke()
   }
   c.setLineDash([])
-  // Stations.
   c.textAlign = 'left'
   for (const station of line.stations) {
     const x = g.X(station.s)
@@ -1297,7 +2135,6 @@ async function exportHeights(format) {
   let blob
   let name
   if (format === 'asc') {
-    // ESRI ASCII grid: north up, rows from the north. y is -z so that north is up.
     const lines = [`ncols ${width}`, `nrows ${height}`, `xllcorner ${x0}`, `yllcorner ${-(z0 + height)}`, 'cellsize 1', 'NODATA_value -9999']
     for (let j = 0; j < height; j++) {
       const row = new Array(width)
@@ -1348,7 +2185,6 @@ async function zlib(bytes) {
     const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate'))
     return new Uint8Array(await new Response(stream).arrayBuffer())
   }
-  // Stored (uncompressed) deflate blocks with the zlib header and checksum.
   const blocks = Math.ceil(bytes.length / 65535) || 1
   const out = new Uint8Array(2 + bytes.length + blocks * 5 + 4)
   out[0] = 0x78
@@ -1423,6 +2259,7 @@ function saveHash() {
   params.set('x', Math.round(v.cx))
   params.set('z', Math.round(v.cz))
   params.set('m', v.mpp.toFixed(2))
+  if (state.year !== 2025) params.set('y', state.year)
   if (state.selected >= 0) params.set('line', state.selected)
   if (state.district >= 0) params.set('d', state.district)
   history.replaceState(null, '', `#${params}`)
@@ -1442,13 +2279,14 @@ function readHash() {
     state.view = { cx: x, cz: z, mpp: m }
     state.fitted = true
   }
+  if (params.has('y') && /^\d+$/.test(params.get('y'))) state.year = Number(params.get('y'))
   if (params.has('line') && /^\d+$/.test(params.get('line'))) state.pendingLine = Number(params.get('line'))
   if (params.has('d') && /^\d+$/.test(params.get('d'))) state.pendingDistrict = Number(params.get('d'))
 }
 
 // ---- Wiring ----
 for (const input of document.querySelectorAll('[data-show]')) {
-  input.checked = state.show[input.dataset.show]
+  input.checked = Boolean(state.show[input.dataset.show])
   input.addEventListener('change', () => {
     state.show[input.dataset.show] = input.checked
     requestDraw()
@@ -1464,6 +2302,36 @@ $('#random-seed').addEventListener('click', () => {
   state.fitted = false
   generate($('#seed').value)
 })
+$('#run-cli-deep')?.addEventListener('click', () => triggerCliGenerate('deep'))
+$('#run-cli-fast')?.addEventListener('click', () => triggerCliGenerate('fast'))
+
+$('#timeline-slider')?.addEventListener('input', (event) => {
+  stopPlayback()
+  setYearByIndex(Number(event.target.value))
+  saveHashSoon()
+})
+$('#timeline-play')?.addEventListener('click', () => {
+  const years = state.overlay?.years
+  if (!years?.length) return
+  if (state.playing) {
+    stopPlayback()
+    return
+  }
+  state.playing = true
+  $('#timeline-play').textContent = '⏸ 停止'
+  let idx = years.indexOf(state.year)
+  if (idx >= years.length - 1 || idx < 0) idx = 0
+  setYearByIndex(idx)
+  state.playTimer = setInterval(() => {
+    idx++
+    if (idx >= years.length) {
+      stopPlayback()
+      return
+    }
+    setYearByIndex(idx)
+  }, 450)
+})
+
 $('#panel-toggle').addEventListener('click', () => {
   const panel = $('#panel')
   const collapsed = !panel.classList.contains('collapsed')
@@ -1475,6 +2343,7 @@ $('#panel-toggle').addEventListener('click', () => {
 window.addEventListener('resize', () => {
   const line = state.overlay?.lines.find((entry) => entry.id === state.selected)
   if (line) drawProfile(line)
+  if (state.isExtremeSim && state.overlay?.timeline) drawCommerceChart(state.overlay.timeline)
 })
 new ResizeObserver(resize).observe(canvas)
 

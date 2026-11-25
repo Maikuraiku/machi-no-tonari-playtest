@@ -3,9 +3,9 @@
 // cafe, one tile of 8 m each; here they are three level tiles a short walk from the station,
 // clear of roads, streets, water, the monorail and its stations. Also a walkable spot near the
 // district's middle, to take the player into the district itself.
-import { ROAD_WIDTH } from './develop.js?v=online-1794980046418'
-import { decodeLine, STEP } from './game-pack.js?v=online-1794980046418'
-import { buildingsIn, streetsIn } from './streets.js?v=online-1794980046418'
+import { ROAD_WIDTH } from './develop.js'
+import { decodeLine, STEP } from './game-pack.js'
+import { landBuildings, landStreets } from './land.js'
 
 const TILE = 8
 
@@ -49,8 +49,10 @@ function tileCheck(region, packs, { streets, lots, lines }) {
     })
     if (blocked) return null
     for (const street of streets) {
-      const [ax, az, bx, bz] = street.points
-      if (segmentDistance(cx, cz, ax, az, bx, bz) < street.width / 2 + 4.5) return null
+      const p = street.points
+      for (let k = 2; k < p.length; k += 2) {
+        if (segmentDistance(cx, cz, p[k - 2], p[k - 1], p[k], p[k + 1]) < street.width / 2 + 4.5) return null
+      }
     }
     // Clear of the monorail.
     for (const line of lines) {
@@ -72,28 +74,102 @@ function tileCheck(region, packs, { streets, lots, lines }) {
   }
 }
 
-// A spot near (x, z) that is not inside a building or in water, in region metres.
+// Whether a point lies in a footprint (corners [x0, z0, …]).
+function insideFootprint(c, px, pz) {
+  let hit = false
+  const count = c.length / 2
+  for (let i = 0, j = count - 1; i < count; j = i++) {
+    const [xi, zi, xj, zj] = [c[i * 2], c[i * 2 + 1], c[j * 2], c[j * 2 + 1]]
+    if ((zi > pz) !== (zj > pz) && px < (xj - xi) * (pz - zi) / (zj - zi) + xi) hit = !hit
+  }
+  return hit
+}
+
+// How far a point is from the walls of a footprint (0 inside it).
+function footprintGap(c, px, pz) {
+  if (insideFootprint(c, px, pz)) return 0
+  let gap = Infinity
+  const count = c.length / 2
+  for (let i = 0, j = count - 1; i < count; j = i++) {
+    gap = Math.min(gap, segmentDistance(px, pz, c[j * 2], c[j * 2 + 1], c[i * 2], c[i * 2 + 1]))
+  }
+  return gap
+}
+
+// A spot near (x, z) to arrive at, in region metres: on the middle of the nearest local street
+// when one runs within 60 m (out in the open, so that the camera has room behind the player),
+// otherwise the nearest spot that keeps 2.5 m clear of every building; never in water or inside
+// a building.
 export function walkableNear(region, x, z) {
-  const houses = buildingsIn(region, x - 60, z - 60, x + 60, z + 60)
-  const inside = (px, pz) => houses.some((house) => {
-    const c = house.corners
-    let hit = false
-    for (let i = 0, j = 3; i < 4; j = i++) {
-      const [xi, zi, xj, zj] = [c[i * 2], c[i * 2 + 1], c[j * 2], c[j * 2 + 1]]
-      if ((zi > pz) !== (zj > pz) && px < (xj - xi) * (pz - zi) / (zj - zi) + xi) hit = !hit
+  const reach = 60
+  const houses = landBuildings(region, x - reach - 10, z - reach - 10, x + reach + 10, z + reach + 10)
+  // The gap to the nearest building round a point (those whose corners lie within 40 m of it).
+  const gapAt = (px, pz) => {
+    let gap = Infinity
+    for (const { corners: c } of houses) {
+      let close = false
+      for (let k = 0; k < c.length && !close; k += 2) close = Math.abs(c[k] - px) < 40 && Math.abs(c[k + 1] - pz) < 40
+      if (close) gap = Math.min(gap, footprintGap(c, px, pz))
     }
-    return hit
-  })
-  for (let radius = 0; radius <= 60; radius += 3) {
+    return gap
+  }
+  const dry = (px, pz) => !region.fine.heightAt(px, pz).water
+  const rounded = (px, pz) => [Math.round(px * 10) / 10, Math.round(pz * 10) / 10]
+
+  let best = null
+  for (const street of landStreets(region, x - reach, z - reach, x + reach, z + reach)) {
+    const p = street.points
+    for (let k = 2; k < p.length; k += 2) {
+      const dx = p[k] - p[k - 2]
+      const dz = p[k + 1] - p[k - 1]
+      const length = dx * dx + dz * dz
+      const t = length > 0 ? Math.min(1, Math.max(0, ((x - p[k - 2]) * dx + (z - p[k - 1]) * dz) / length)) : 0
+      const px = p[k - 2] + dx * t
+      const pz = p[k - 1] + dz * t
+      const d = Math.hypot(px - x, pz - z)
+      if (d > reach || (best && d >= best.d)) continue
+      if (dry(px, pz) && gapAt(px, pz) > 0.5) best = { d, px, pz }
+    }
+  }
+  if (best) return rounded(best.px, best.pz)
+
+  let fallback = null
+  for (let radius = 0; radius <= reach; radius += 3) {
     const steps = Math.max(1, Math.round(radius * 0.8))
     for (let k = 0; k < steps; k++) {
       const angle = k / steps * Math.PI * 2
       const px = x + Math.cos(angle) * radius
       const pz = z + Math.sin(angle) * radius
-      if (!inside(px, pz) && !region.fine.heightAt(px, pz).water) return [Math.round(px * 10) / 10, Math.round(pz * 10) / 10]
+      if (!dry(px, pz)) continue
+      const gap = gapAt(px, pz)
+      if (gap >= 2.5) return rounded(px, pz)
+      if (gap > 0 && !fallback) fallback = rounded(px, pz)
     }
   }
-  return [x, z]
+  return fallback ?? [x, z]
+}
+
+// The station a town at 丁目 `target` begins at: its own, else the nearest to its middle.
+function stationFor(target, stations) {
+  const own = stations.filter((station) => target.stations.includes(station.name))
+  const pool = own.length ? own : stations
+  return pool.reduce((best, entry) => (Math.hypot(entry.x - target.x, entry.z - target.z) < Math.hypot(best.x - target.x, best.z - target.z) ? entry : best))
+}
+
+// How far round the station the town's first tiles are looked for (m).
+const SITE_REACH = 72
+
+// The boxes of land [x0, z0, x1, z1] that pickSite reads for `district`, so that a pack's
+// parcel tiles can be fetched first (land.js ensureLand).
+export function siteBoxes(region, packs, district) {
+  const target = region.division.districts[district]
+  if (!target) return []
+  const station = stationFor(target, stationsOf(packs))
+  const reach = SITE_REACH + 20
+  return [
+    [station.x - reach, station.z - reach, station.x + reach, station.z + reach],
+    [target.x - 70, target.z - 70, target.x + 70, target.z + 70],
+  ]
 }
 
 // The plaza, shop and cafe for a town that begins at district `district`.
@@ -102,11 +178,9 @@ export function pickSite(region, packs, { district }) {
   const target = division.districts[district]
   if (!target) throw new Error('unknown district')
   const stations = stationsOf(packs)
-  const own = stations.filter((station) => target.stations.includes(station.name))
-  const pool = own.length ? own : stations
-  const station = pool.reduce((best, entry) => (Math.hypot(entry.x - target.x, entry.z - target.z) < Math.hypot(best.x - target.x, best.z - target.z) ? entry : best))
-  const reach = 72
-  const streets = streetsIn(region, station.x - reach - 20, station.z - reach - 20, station.x + reach + 20, station.z + reach + 20)
+  const station = stationFor(target, stations)
+  const reach = SITE_REACH
+  const streets = landStreets(region, station.x - reach - 20, station.z - reach - 20, station.x + reach + 20, station.z + reach + 20)
   const lots = stations.flatMap((entry) => entry.lots)
   const lines = [...new Set(stations.map((entry) => entry.line))]
   const check = tileCheck(region, packs, { streets, lots, lines })

@@ -1,7 +1,7 @@
 // Who lives and works in each 20 m cell. Floor area follows from what stands there and how
 // tightly it is built (the floor area ratio); people follow from floor area.
-import { USE } from './develop.js?v=online-1794980046418'
-import { fbm } from './noise.js?v=online-1794980046418'
+import { USE } from './develop.js'
+import { fbm } from './noise.js'
 
 // For each use: floor area ratio (floor area over plot area), the residential share of the
 // floor area, square metres of home per resident, people per household, square metres of
@@ -12,6 +12,8 @@ export const BUILDING = {
   [USE.MID]: { ratio: 1.7, residential: 0.88, perResident: 31, household: 1.9, perJob: 35, streets: 0.25 },
   [USE.HIGH]: { ratio: 4.2, residential: 0.85, perResident: 33, household: 2.0, perJob: 30, streets: 0.3 },
   [USE.COMMERCIAL]: { ratio: 2.4, residential: 0.3, perResident: 30, household: 1.6, perJob: 24, streets: 0.25 },
+  [USE.ROADSIDE_COM]: { ratio: 1.15, residential: 0.08, perResident: 32, household: 1.8, perJob: 34, streets: 0.35 },
+  [USE.STATION_HUB]: { ratio: 4.8, residential: 0.22, perResident: 30, household: 1.5, perJob: 20, streets: 0.26 },
   [USE.INDUSTRIAL]: { ratio: 0.85, residential: 0, perResident: 40, household: 2, perJob: 70, streets: 0.15 },
   [USE.PUBLIC]: { ratio: 0.55, residential: 0, perResident: 40, household: 2, perJob: 55, streets: 0.1 },
 }

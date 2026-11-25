@@ -9,11 +9,11 @@
 //   0 free.
 // Where several hold, 3 wins over 1, 1 over 2 and 2 over 0. Tiles of the box outside the 丁目
 // get codes too; they never matter. Pure (no DOM): runs in the region worker and in Node.
-import { ROAD_WIDTH } from './develop.js?v=online-1794980046418'
-import { BUILDING, FREE, NEVER, ROAD, setMaskCode, tileBox } from './district-lookup.js?v=online-1794980046418'
-import { decodeLine } from './game-pack.js?v=online-1794980046418'
-import { stationFootprint } from './route-plan.js?v=online-1794980046418'
-import { buildingsIn, streetsIn } from './streets.js?v=online-1794980046418'
+import { ROAD_WIDTH } from './develop.js'
+import { BUILDING, FREE, NEVER, ROAD, setMaskCode, tileBox } from './district-lookup.js'
+import { decodeLine } from './game-pack.js'
+import { stationFootprint } from './route-plan.js'
+import { landBuildings, landStreets } from './land.js'
 
 const TILE = 8
 export const RAIL_CLEAR = 6 // metres kept free either side of a monorail's centre line
@@ -25,6 +25,18 @@ const MARGIN = 8 // metres round the box asked for streets and buildings
 const HOLDS_NEVER = 1
 const HOLDS_ROAD = 2
 const HOLDS_BUILDING = 4
+
+// The land (metres, [x0, z0, x1, z1]) the survey of 丁目 `id` reads its streets and buildings
+// from, so that a pack's parcel tiles can be fetched first (land.js ensureLand); null when the
+// 丁目 has no land.
+export function surveyBox(region, id) {
+  const { division } = region
+  if (!Number.isInteger(id) || id < 0 || id >= division.districts.length) return null
+  const box = tileBox(division.districtOf, id, division.columns)
+  if (!box) return null
+  const [tx0, tz0, tw, td] = box
+  return [tx0 * TILE - MARGIN, tz0 * TILE - MARGIN, (tx0 + tw) * TILE + MARGIN, (tz0 + td) * TILE + MARGIN]
+}
 
 // The survey of 丁目 `id`: { box: [tx0, tz0, tw, td], mask: Uint8Array(ceil(tw * td / 4)) }.
 // `packs` are the town's line packs (game-pack.js), for the monorail and its stations.
@@ -56,13 +68,15 @@ export function surveyDistrict(region, packs, id) {
   region.roadIndex.inBox(x0 - roadReach, z0 - roadReach, x1 + roadReach, z1 + roadReach, (segment) => {
     markStrip(survey, segment.ax, segment.az, segment.bx, segment.bz, ROAD_WIDTH[segment.data] / 2, HOLDS_ROAD, HOLDS_NEVER | HOLDS_ROAD)
   })
-  for (const street of streetsIn(region, x0 - MARGIN, z0 - MARGIN, x1 + MARGIN, z1 + MARGIN)) {
-    const [ax, az, bx, bz] = street.points
-    markStrip(survey, ax, az, bx, bz, street.width / 2, HOLDS_ROAD, HOLDS_NEVER | HOLDS_ROAD)
+  for (const street of landStreets(region, x0 - MARGIN, z0 - MARGIN, x1 + MARGIN, z1 + MARGIN)) {
+    const p = street.points
+    for (let k = 2; k < p.length; k += 2) {
+      markStrip(survey, p[k - 2], p[k - 1], p[k], p[k + 1], street.width / 2, HOLDS_ROAD, HOLDS_NEVER | HOLDS_ROAD)
+    }
   }
 
   // The region's own buildings.
-  for (const building of buildingsIn(region, x0 - MARGIN, z0 - MARGIN, x1 + MARGIN, z1 + MARGIN)) {
+  for (const building of landBuildings(region, x0 - MARGIN, z0 - MARGIN, x1 + MARGIN, z1 + MARGIN)) {
     markPolygon(survey, building.corners, HOLDS_BUILDING, HOLDS_NEVER | HOLDS_ROAD | HOLDS_BUILDING)
   }
 

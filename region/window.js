@@ -52,9 +52,50 @@ export function regionWindow(region, { x0, z0, x1, z1, step = 2, buildings = tru
   for (const link of city.roads.links) {
     const [bx0, bz0, bx1, bz1] = boxOf(link.points)
     if (!overlaps(bx0, bz0, bx1, bz1, x0 - margin, z0 - margin, x1 + margin, z1 + margin)) continue
-    roads.push({ kind: link.kind, era: link.era ?? 4, width: ROAD_WIDTH[link.kind], points: Float32Array.from(link.points) })
+    roads.push({
+      kind: link.kind,
+      era: link.era ?? 4,
+      width: ROAD_WIDTH[link.kind],
+      points: Float32Array.from(link.points),
+      regFlags: link.regFlags ?? 0,
+      legalSpeedKmh: link.legalSpeedKmh ?? null,
+      oneWay: link.oneWay ?? 0,
+      centerlineType: link.centerlineType ?? 'none',
+    })
   }
-  const streets = (withStreets ? streetsIn(region, x0, z0, x1, z1) : []).map((street) => ({
+  const intersections = []
+  for (const inter of city.roads.intersections ?? []) {
+    if (inter.x < x0 - margin || inter.x > x1 + margin || inter.z < z0 - margin || inter.z > z1 + margin) continue
+    const hasSignal = inter.ctrl === 3 || inter.ctrl === 4 || inter.ctrl === 5
+    intersections.push({
+      x: inter.x,
+      z: inter.z,
+      ctrl: inter.ctrl,
+      hasSignal,
+      hasStop: inter.ctrl === 2,
+      isRoundabout: inter.ctrl === 6,
+      hasDiamond: Boolean(inter.diamondYear > 0),
+      hasCrosswalk: Boolean(inter.crosswalkYear > 0),
+      hasTurnLane: Boolean(inter.turnLaneYear > 0),
+    })
+  }
+  const levelCrossings = []
+  for (const c of city.roads.levelCrossings ?? []) {
+    if (c.eliminatedYear > 0) continue
+    if (c.x < x0 - margin || c.x > x1 + margin || c.z < z0 - margin || c.z > z1 + margin) continue
+    levelCrossings.push({
+      x: c.x,
+      z: c.z,
+      roadAngle: c.roadAngle ?? 0,
+      railAngle: c.railAngle ?? 0,
+      crossingClass: c.crossingClass ?? 3,
+    })
+  }
+  const rawStreets = !withStreets ? []
+    : (region.isExtremeSim && region.buildingCache?.streetsInWindow
+      ? region.buildingCache.streetsInWindow(x0, z0, x1, z1)
+      : streetsIn(region, x0, z0, x1, z1))
+  const streets = rawStreets.map((street) => ({
     points: Float32Array.from(street.points),
     width: street.width,
     kind: street.kind ?? 'street',
@@ -66,7 +107,15 @@ export function regionWindow(region, { x0, z0, x1, z1, step = 2, buildings = tru
         const [bx0, bz0, bx1, bz1] = boxOf(building.corners)
         return overlaps(bx0, bz0, bx1, bz1, x0, z0, x1, z1)
       })
-      .map((building) => ({ corners: Float32Array.from(building.corners), lot: building.lot ?? [0.3, 0.3, 0.4, 0.3], tier: building.tier ?? 1, floors: building.floors, use: building.use, tone: building.tone }))
+      .map((building) => ({
+        corners: Float32Array.from(building.corners),
+        lot: building.lot ?? [0.3, 0.3, 0.4, 0.3],
+        tier: building.tier ?? 1,
+        floors: building.floors,
+        use: building.use,
+        tone: building.tone,
+        shopType: building.shopType ?? 255,
+      }))
     : []
   const water = []
   for (const stream of streams.list) {
@@ -108,6 +157,8 @@ export function regionWindow(region, { x0, z0, x1, z1, step = 2, buildings = tru
     era,
     land,
     roads,
+    intersections,
+    levelCrossings,
     streets,
     buildings: houses,
     streams: water,

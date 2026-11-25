@@ -8,7 +8,7 @@ const listeners = new Set()
 const pending = new Map()
 const status = {
   seed: null, phase: 'idle', label: '', fraction: 0, elapsed: 0,
-  overlay: null, fingerprint: null, version: null, error: '', shown: false,
+  overlay: null, fingerprint: null, version: null, error: '', shown: false, legacy: false,
 }
 let worker = null
 let asked = 0
@@ -75,7 +75,9 @@ function onMessage(event) {
 function start() {
   worker?.terminate()
   heard = false
-  worker = new Worker(new URL('../region/worker.js?v=3', import.meta.url), { type: 'module' })
+  worker = status.legacy
+    ? new Worker(new URL('./region/worker-20261119.bundle.js', location.href))
+    : new Worker(new URL('../region/worker.js?v=5', import.meta.url), { type: 'module' })
   worker.onmessage = onMessage
   worker.onerror = (event) => {
     event.preventDefault?.()
@@ -97,12 +99,14 @@ export const regionClient = {
   },
 
   // Starts generating the region of `seed` (nothing happens if it is already there or on the way).
-  open(seed) {
-    if (status.seed === seed && worker && status.phase !== 'failed') return
+  open(seed, fingerprint) {
+    // This published generator matches the regions saved under the November 19 release.
+    const legacy = seed === 3 && fingerprint?.division === '436f9b15047fa889' && fingerprint?.lines === 'e7b095f714a2d221'
+    if (status.seed === seed && status.legacy === legacy && worker && status.phase !== 'failed') return
     this.close()
     Object.assign(status, {
       seed, phase: 'generating', label: '準備', fraction: 0, elapsed: 0,
-      overlay: null, fingerprint: null, version: null, error: '', shown: false,
+      overlay: null, fingerprint: null, version: null, error: '', shown: false, legacy,
     })
     restarts = 0
     start()
@@ -118,7 +122,7 @@ export const regionClient = {
       entry.reject(new Error('地域を閉じました。'))
     }
     if (status.seed !== null) {
-      Object.assign(status, { seed: null, phase: 'idle', overlay: null, shown: false })
+      Object.assign(status, { seed: null, phase: 'idle', overlay: null, shown: false, legacy: false })
       emit('close')
     }
   },
